@@ -1,0 +1,4026 @@
+import React, {
+  useState,
+  useEffect,
+  useCallback,
+  useMemo,
+  forwardRef,
+} from "react";
+import { initializeApp } from "firebase/app";
+import {
+  getAuth,
+  signInAnonymously,
+  signInWithCustomToken,
+  onAuthStateChanged,
+} from "firebase/auth";
+import {
+  getFirestore,
+  doc,
+  getDoc,
+  addDoc,
+  setDoc,
+  updateDoc,
+  deleteDoc,
+  onSnapshot,
+  collection,
+  query,
+  where,
+  writeBatch,
+  getDocs,
+} from "firebase/firestore";
+
+// Define Tailwind CSS classes for Bluelinxco.com inspired theme
+const BLUELINX_COLORS = {
+  primaryBlue: "bg-[#005691] text-white",
+  accentBlueGrey: "bg-[#6C7A89] text-white",
+  whiteBg: "bg-white text-[#333333]",
+  lightGreyBg: "bg-[#F8F8F8] text-[#333333]",
+  darkText: "text-[#333333]",
+  successGreen: "bg-[#4CAF50] text-white",
+  pendingOrange: "bg-[#FFC107] text-[#333333]",
+  buttonPrimary:
+    "bg-[#005691] hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-md shadow-md transition duration-200 ease-in-out",
+  buttonSecondary:
+    "bg-gray-200 hover:bg-gray-300 text-gray-800 font-bold py-2 px-4 rounded-md shadow-md transition duration-200 ease-in-out",
+  inputStyle:
+    "block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm",
+  tableHeader:
+    "px-6 py-3 text-left text-xs font-medium text-white uppercase tracking-wider cursor-pointer",
+  tableRow: "px-6 py-4 whitespace-nowrap text-sm text-gray-900",
+  tableOddRow: "bg-white",
+  tableEvenRow: "bg-gray-50",
+};
+
+// Reusable Modal Component
+const Modal = ({ isOpen, onClose, title, children }) => {
+  if (!isOpen) return null;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center overflow-x-hidden overflow-y-auto outline-none focus:outline-none bg-gray-900 bg-opacity-50">
+      <div className="relative w-full max-w-lg p-6 my-8 mx-auto rounded-lg shadow-lg bg-white">
+        {/* Header */}
+        <div className="flex items-start justify-between pb-3 border-b border-solid border-gray-200 rounded-t">
+          <h3 className={`text-xl font-semibold text-[#005691]`}>{title}</h3>
+          <button
+            className="p-1 ml-auto bg-transparent border-0 text-gray-700 opacity-70 float-right text-3xl leading-none font-semibold outline-none focus:outline-none"
+            onClick={onClose}
+          >
+            ×
+          </button>
+        </div>
+        {/* Body */}
+        <div className="relative py-4 flex-auto max-h-96 overflow-y-auto">
+          {children}
+        </div>
+        {/* Footer */}
+        <div className="flex items-center justify-end pt-3 border-t border-solid border-gray-200 rounded-b">
+          <button
+            className={`${BLUELINX_COLORS.buttonSecondary} mr-2`}
+            type="button"
+            onClick={onClose}
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// Reusable MessageBox Component (for alerts/confirms) - Wrapped with forwardRef
+const MessageBox = forwardRef(({ message, type, onConfirm, onCancel }, ref) => {
+  const [isOpen, setIsOpen] = useState(false);
+  const [currentMessage, setCurrentMessage] = useState("");
+  const [currentType, setCurrentType] = useState("");
+  const [currentOnConfirm, setCurrentOnConfirm] = useState(null);
+  const [currentOnCancel, setCurrentOnCancel] = useState(null);
+
+  // Expose a method to open the message box from outside
+  React.useImperativeHandle(ref, () => ({
+    open: (msg, msgType, confirmCb, cancelCb) => {
+      setCurrentMessage(msg);
+      setCurrentType(msgType);
+      setCurrentOnConfirm(() => confirmCb);
+      setCurrentOnCancel(() => cancelCb);
+      setIsOpen(true);
+    },
+    close: () => {
+      setIsOpen(false);
+      setCurrentOnConfirm(null);
+      setCurrentOnCancel(null);
+    },
+  }));
+
+  const handleConfirm = () => {
+    if (currentOnConfirm) currentOnConfirm();
+    setIsOpen(false);
+  };
+
+  const handleCancel = () => {
+    if (currentOnCancel) currentOnCancel();
+    setIsOpen(false);
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center overflow-x-hidden overflow-y-auto outline-none focus:outline-none bg-gray-900 bg-opacity-50">
+      <div className="relative w-full max-w-sm p-6 my-8 mx-auto rounded-lg shadow-lg bg-white">
+        <h3
+          className={`text-lg font-semibold ${
+            type === "error" ? "text-red-600" : "text-[#005691]"
+          } mb-4`}
+        >
+          {type === "confirm"
+            ? "Confirmation"
+            : type === "error"
+            ? "Error"
+            : "Notification"}
+        </h3>
+        <p className="text-gray-700 mb-6">{currentMessage}</p>
+        <div className="flex justify-end space-x-2">
+          {currentType === "confirm" && (
+            <button
+              className={`${BLUELINX_COLORS.buttonSecondary}`}
+              onClick={handleCancel}
+            >
+              Cancel
+            </button>
+          )}
+          <button
+            className={`${BLUELINX_COLORS.buttonPrimary}`}
+            onClick={handleConfirm}
+          >
+            {currentType === "confirm" ? "Confirm" : "OK"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+});
+
+// Loading Spinner Component
+const LoadingSpinner = () => (
+  <div className="flex justify-center items-center h-full min-h-[200px]">
+    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#005691]"></div>
+    <span className="ml-3 text-[#005691]">Loading...</span>
+  </div>
+);
+
+// CSV Parser Helper
+const parseCSV = (csvString) => {
+  const lines = csvString.split("\n").filter((line) => line.trim() !== ""); // Filter out empty lines
+  if (lines.length === 0) return [];
+  const headers = lines[0].split(",").map((h) => h.trim());
+  const data = [];
+  for (let i = 1; i < lines.length; i++) {
+    const values = lines[i].split(",").map((v) => v.trim());
+    if (values.length !== headers.length) {
+      // Handle rows with incorrect number of columns, e.g., skip or log error
+      console.warn(`Skipping row ${i + 1} due to column mismatch.`);
+      continue;
+    }
+    let row = {};
+    headers.forEach((header, index) => {
+      row[header] = values[index];
+    });
+    data.push(row);
+  }
+  return data;
+};
+
+// Base Table Component with Sorting, Filtering, Searching
+const DataTable = ({
+  data,
+  columns,
+  filterFields,
+  searchFields,
+  initialSortColumn,
+  initialSortDirection,
+  title,
+  actions, // { label, onClick, className }
+  children, // For filters or other custom elements above the table
+}) => {
+  const [searchTerm, setSearchTerm] = useState("");
+  const [filters, setFilters] = useState({});
+  const [sortColumn, setSortColumn] = useState(initialSortColumn || null);
+  const [sortDirection, setSortDirection] = useState(
+    initialSortDirection || "asc"
+  ); // 'asc' or 'desc'
+
+  // Handle Filter Change
+  const handleFilterChange = (e) => {
+    const { name, value } = e.target;
+    setFilters((prev) => ({ ...prev, [name]: value }));
+  };
+
+  // Handle Sort
+  const handleSort = (columnKey) => {
+    if (sortColumn === columnKey) {
+      setSortDirection(sortDirection === "asc" ? "desc" : "asc");
+    } else {
+      setSortColumn(columnKey);
+      setSortDirection("asc");
+    }
+  };
+
+  // Filter and Sort Data
+  const filteredAndSortedData = useMemo(() => {
+    let currentData = [...data];
+
+    // Apply Search
+    if (searchTerm) {
+      const lowerCaseSearchTerm = searchTerm.toLowerCase();
+      currentData = currentData.filter((item) =>
+        searchFields.some((field) =>
+          String(item[field]).toLowerCase().includes(lowerCaseSearchTerm)
+        )
+      );
+    }
+
+    // Apply Filters
+    currentData = currentData.filter((item) => {
+      return Object.entries(filters).every(([key, value]) => {
+        if (!value) return true; // No filter applied for this field
+        return String(item[key])
+          .toLowerCase()
+          .includes(String(value).toLowerCase());
+      });
+    });
+
+    // Apply Sort
+    if (sortColumn) {
+      currentData.sort((a, b) => {
+        const aValue = a[sortColumn];
+        const bValue = b[sortColumn];
+
+        if (aValue === undefined || bValue === undefined) return 0; // Handle missing values
+
+        if (typeof aValue === "string" && typeof bValue === "string") {
+          return sortDirection === "asc"
+            ? aValue.localeCompare(bValue)
+            : bValue.localeCompare(aValue);
+        } else if (typeof aValue === "number" && typeof bValue === "number") {
+          return sortDirection === "asc" ? aValue - bValue : bValue - aValue;
+        }
+        // Fallback for other types or if types differ
+        return 0;
+      });
+    }
+    return currentData;
+  }, [data, searchTerm, filters, sortColumn, sortDirection, searchFields]);
+
+  return (
+    <div className={`${BLUELINX_COLORS.lightGreyBg} p-4 rounded-lg shadow-md`}>
+      <h2 className={`text-2xl font-semibold mb-4 ${BLUELINX_COLORS.darkText}`}>
+        {title}
+      </h2>
+      <div className="mb-4 flex flex-wrap gap-3 items-center">
+        <input
+          type="text"
+          placeholder="Search..."
+          value={searchTerm}
+          onChange={(e) => setSearchTerm(e.target.value)}
+          className={`${BLUELINX_COLORS.inputStyle} max-w-xs`}
+        />
+        {filterFields &&
+          filterFields.map((field) => (
+            <input
+              key={field.key}
+              type="text"
+              name={field.key}
+              placeholder={`Filter by ${field.label}...`}
+              value={filters[field.key] || ""}
+              onChange={handleFilterChange}
+              className={`${BLUELINX_COLORS.inputStyle} max-w-[150px]`}
+            />
+          ))}
+        {children} {/* For custom filters/elements */}
+        <div className="flex-grow flex justify-end gap-2">
+          {actions &&
+            actions.map((action, index) => (
+              // Ensure a unique key for each action button
+              <button
+                key={action.label || index}
+                onClick={action.onClick}
+                className={action.className || BLUELINX_COLORS.buttonPrimary}
+              >
+                {action.label}
+              </button>
+            ))}
+        </div>
+      </div>
+      <div className="overflow-x-auto rounded-lg border border-gray-200 shadow-sm">
+        <table className="min-w-full divide-y divide-gray-200">
+          <thead className={BLUELINX_COLORS.accentBlueGrey}>
+            <tr>
+              {columns.map((col) => (
+                <th
+                  key={col.key}
+                  scope="col"
+                  className={`${BLUELINX_COLORS.tableHeader} ${
+                    col.sortable ? "" : "pointer-events-none"
+                  }`}
+                  onClick={() => col.sortable && handleSort(col.key)}
+                >
+                  {col.label}
+                  {col.sortable && sortColumn === col.key && (
+                    <span className="ml-1">
+                      {sortDirection === "asc" ? "▲" : "▼"}
+                    </span>
+                  )}
+                </th>
+              ))}
+              {actions && actions.length > 0 && (
+                <th scope="col" className={`${BLUELINX_COLORS.tableHeader}`}>
+                  Actions
+                </th>
+              )}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-200">
+            {filteredAndSortedData.length === 0 ? (
+              <tr>
+                <td
+                  colSpan={
+                    columns.length + (actions && actions.length > 0 ? 1 : 0)
+                  }
+                  className="text-center py-4 text-gray-500"
+                >
+                  No data available.
+                </td>
+              </tr>
+            ) : (
+              filteredAndSortedData.map((item, index) => (
+                <tr
+                  key={item.id}
+                  className={
+                    index % 2 === 0
+                      ? BLUELINX_COLORS.tableOddRow
+                      : BLUELINX_COLORS.tableEvenRow
+                  }
+                >
+                  {columns.map((col) => (
+                    <td key={col.key} className={BLUELINX_COLORS.tableRow}>
+                      {col.render ? col.render(item) : item[col.key]}
+                    </td>
+                  ))}
+                  {actions && actions.length > 0 && (
+                    <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium flex gap-2">
+                      {actions.map((action, actionIndex) =>
+                        action.render ? (
+                          action.render(item)
+                        ) : (
+                          // Ensure unique key for rendered action buttons
+                          <button
+                            key={`${action.label}-${actionIndex}`} // Concatenate label and index for uniqueness
+                            onClick={() => action.onClick(item)}
+                            className={
+                              action.className ||
+                              `${BLUELINX_COLORS.buttonSecondary} text-xs py-1 px-2`
+                            }
+                          >
+                            {action.label}
+                          </button>
+                        )
+                      )}
+                    </td>
+                  )}
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+};
+
+// Helper function moved outside component (now unused for equipment validation)
+const isModelExistingUtil = (modelNumber, inventoryItems, equipmentItems) => {
+  return (
+    inventoryItems.some((item) => item.modelNumber === modelNumber) ||
+    equipmentItems.some((item) => item.model === modelNumber)
+  );
+};
+
+// --- Page Components ---
+
+// Inventory Page
+const Inventory = ({ db, userId, showMessage }) => {
+  const [inventory, setInventory] = useState([]);
+  const [warehouses, setWarehouses] = useState([]);
+  const [isAddInventoryModalOpen, setIsAddInventoryModalOpen] = useState(false); // New state for add/import modal
+  const [showCsvImport, setShowCsvImport] = useState(false); // State to toggle between manual add and CSV import
+  const [csvFile, setCsvFile] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [newInventoryItem, setNewInventoryItem] = useState({
+    // State for new manual inventory item
+    modelNumber: "",
+    category: "",
+    amountInInventory: 0,
+    numOnOrder: 0,
+    manufactureName: "",
+    imageUrl: "",
+    assignedBranchId: "",
+  });
+
+  // Fetch Inventory and Warehouses
+  useEffect(() => {
+    if (!db || !userId) return;
+    setLoading(true);
+    const inventoryCollectionRef = collection(
+      db,
+      `artifacts/${__app_id}/users/${userId}/inventory`
+    );
+    const warehousesCollectionRef = collection(
+      db,
+      `artifacts/${__app_id}/users/${userId}/warehouses`
+    );
+
+    const unsubscribeInventory = onSnapshot(
+      inventoryCollectionRef,
+      (snapshot) => {
+        const inventoryData = snapshot.docs.map((doc) => ({
+          id: doc.id,
+          ...doc.data(),
+        }));
+        setInventory(inventoryData);
+        setLoading(false);
+      },
+      (error) => {
+        console.error("Error fetching inventory: ", error);
+        showMessage("Error fetching inventory.", "error");
+        setLoading(false);
+      }
+    );
+
+    const unsubscribeWarehouses = onSnapshot(
+      warehousesCollectionRef,
+      (snapshot) => {
+        const warehousesData = snapshot.docs.map((doc) => ({
+          id: doc.id,
+          ...doc.data(),
+        }));
+        setWarehouses(warehousesData);
+      },
+      (error) => {
+        console.error("Error fetching warehouses: ", error);
+        showMessage("Error fetching warehouses for filtering.", "error");
+      }
+    );
+
+    return () => {
+      unsubscribeInventory();
+      unsubscribeWarehouses();
+    };
+  }, [db, userId, showMessage]);
+
+  const warehouseMap = useMemo(() => {
+    return warehouses.reduce((map, wh) => ({ ...map, [wh.id]: wh.name }), {});
+  }, [warehouses]);
+
+  // Handle new inventory item form changes
+  const handleNewInventoryItemChange = (e) => {
+    const { name, value, type } = e.target;
+    setNewInventoryItem((prev) => ({
+      ...prev,
+      [name]: type === "number" ? parseInt(value) || 0 : value,
+    }));
+  };
+
+  // Handle adding a new inventory item manually
+  const handleAddInventorySubmit = async (e) => {
+    e.preventDefault();
+    if (
+      !newInventoryItem.modelNumber ||
+      !newInventoryItem.category ||
+      newInventoryItem.amountInInventory <= 0
+    ) {
+      showMessage(
+        "Please fill in Model Number, Category, and ensure Amount in Inventory is positive.",
+        "error"
+      );
+      return;
+    }
+
+    try {
+      // Use doc(collectionRef) to get a new document reference with an auto-generated ID
+      await setDoc(
+        doc(collection(db, `artifacts/${__app_id}/users/${userId}/inventory`)),
+        {
+          ...newInventoryItem,
+          imageUrl:
+            newInventoryItem.imageUrl ||
+            "https://placehold.co/100x100/eeeeee/333333?text=No+Image",
+        }
+      );
+      showMessage("Inventory item added successfully!", "success");
+      setIsAddInventoryModalOpen(false);
+      setNewInventoryItem({
+        // Reset form
+        modelNumber: "",
+        category: "",
+        amountInInventory: 0,
+        numOnOrder: 0,
+        manufactureName: "",
+        imageUrl: "",
+        assignedBranchId: "",
+      });
+    } catch (e) {
+      console.error("Error adding inventory item: ", e);
+      showMessage("Failed to add inventory item.", "error");
+    }
+  };
+
+  // Handle CSV File Change
+  const handleFileChange = (e) => {
+    setCsvFile(e.target.files[0]);
+  };
+
+  // Handle CSV Import
+  const handleImportCSV = async () => {
+    if (!csvFile) {
+      showMessage("Please select a CSV file to import.", "error");
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      const text = e.target.result;
+      const parsedData = parseCSV(text);
+
+      if (parsedData.length === 0) {
+        showMessage("CSV file is empty or could not be parsed.", "error");
+        return;
+      }
+
+      const batch = writeBatch(db);
+      const inventoryCollectionRef = collection(
+        db,
+        `artifacts/${__app_id}/users/${userId}/inventory`
+      );
+
+      // Basic validation and type conversion for common fields
+      const processedData = parsedData.map((item) => ({
+        modelNumber: item["Model Number"] || "",
+        category: item["Category"] || "",
+        amountInInventory: parseInt(item["Amount in Inventory"]) || 0,
+        numOnOrder: parseInt(item["Number on Order"]) || 0,
+        manufactureName: item["Manufacture Name"] || "",
+        imageUrl:
+          item["Image"] ||
+          "https://placehold.co/100x100/eeeeee/333333?text=No+Image", // Placeholder
+        assignedBranchId: item["Assigned Branch Short Code"] || "", // Assuming short code is used to link to warehouse
+      }));
+
+      for (const item of processedData) {
+        // Check if item with modelNumber already exists to update or add new
+        const existingDocQuery = query(
+          inventoryCollectionRef,
+          where("modelNumber", "==", item.modelNumber)
+        );
+        const existingDocs = await getDocs(existingDocQuery);
+
+        if (!existingDocs.empty) {
+          // Update existing item
+          const docRef = doc(
+            db,
+            `artifacts/${__app_id}/users/${userId}/inventory`,
+            existingDocs.docs[0].id
+          );
+          batch.update(docRef, item);
+        } else {
+          // Add new item using set with an auto-generated doc reference
+          batch.set(doc(inventoryCollectionRef), item);
+        }
+      }
+
+      try {
+        await batch.commit();
+        showMessage("Inventory imported successfully!", "success");
+        setIsAddInventoryModalOpen(false); // Close the combined modal
+        setCsvFile(null); // Clear selected file
+        setShowCsvImport(false); // Reset to manual add view
+      } catch (e) {
+        console.error("Error importing inventory: ", e);
+        showMessage(
+          "Failed to import inventory. Please check CSV format.",
+          "error"
+        );
+      }
+    };
+    reader.readAsText(csvFile);
+  };
+
+  const inventoryColumns = [
+    { key: "modelNumber", label: "Model Number", sortable: true },
+    { key: "category", label: "Category", sortable: true },
+    { key: "amountInInventory", label: "Amount", sortable: true },
+    { key: "numOnOrder", label: "On Order", sortable: true },
+    { key: "manufactureName", label: "Manufacture", sortable: true },
+    {
+      key: "imageUrl",
+      label: "Image",
+      render: (item) => (
+        <img
+          src={item.imageUrl}
+          alt={item.modelNumber}
+          className="w-16 h-16 object-cover rounded-md"
+          onError={(e) =>
+            (e.target.src =
+              "https://placehold.co/100x100/eeeeee/333333?text=No+Image")
+          }
+        />
+      ),
+    },
+    {
+      key: "assignedBranchId",
+      label: "Branch",
+      sortable: true,
+      render: (item) =>
+        warehouseMap[item.assignedBranchId] || item.assignedBranchId || "N/A",
+    },
+  ];
+
+  const inventoryFilterFields = [
+    { key: "category", label: "Category" },
+    { key: "manufactureName", label: "Manufacture" },
+    { key: "assignedBranchId", label: "Branch Code" },
+  ];
+
+  const inventorySearchFields = ["modelNumber", "category", "manufactureName"];
+
+  return (
+    <div className="container mx-auto p-4">
+      {loading ? (
+        <LoadingSpinner />
+      ) : (
+        <>
+          <DataTable
+            title="Inventory Overview"
+            data={inventory}
+            columns={inventoryColumns}
+            filterFields={inventoryFilterFields}
+            searchFields={inventorySearchFields}
+            initialSortColumn="modelNumber"
+            actions={[
+              {
+                label: "Add Inventory",
+                onClick: () => setIsAddInventoryModalOpen(true),
+              }, // Open the new combined modal
+            ]}
+          />
+
+          {/* Combined Modal for Add/Import Inventory */}
+          <Modal
+            isOpen={isAddInventoryModalOpen}
+            onClose={() => {
+              setIsAddInventoryModalOpen(false);
+              setShowCsvImport(false); // Reset to manual add view on close
+              setCsvFile(null); // Clear file
+              setNewInventoryItem({
+                // Reset form
+                modelNumber: "",
+                category: "",
+                amountInInventory: 0,
+                numOnOrder: 0,
+                manufactureName: "",
+                imageUrl: "",
+                assignedBranchId: "",
+              });
+            }}
+            title={
+              showCsvImport
+                ? "Import Inventory via CSV"
+                : "Add New Inventory Item"
+            }
+          >
+            <div className="flex justify-center mb-4">
+              <button
+                onClick={() => setShowCsvImport(false)}
+                className={`px-4 py-2 rounded-l-md ${
+                  !showCsvImport
+                    ? BLUELINX_COLORS.buttonPrimary
+                    : BLUELINX_COLORS.buttonSecondary
+                }`}
+              >
+                Add Manually
+              </button>
+              <button
+                onClick={() => setShowCsvImport(true)}
+                className={`px-4 py-2 rounded-r-md ${
+                  showCsvImport
+                    ? BLUELINX_COLORS.buttonPrimary
+                    : BLUELINX_COLORS.buttonSecondary
+                }`}
+              >
+                Import CSV
+              </button>
+            </div>
+
+            {showCsvImport ? (
+              <>
+                <p className="mb-4 text-gray-700">
+                  Upload a CSV file with 'Model Number', 'Category', 'Amount in
+                  Inventory', 'Number on Order', 'Manufacture Name', 'Image',
+                  'Assigned Branch Short Code' columns.
+                </p>
+                <input
+                  type="file"
+                  accept=".csv"
+                  onChange={handleFileChange}
+                  className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-[#005691] file:text-white hover:file:bg-blue-700"
+                />
+                <div className="mt-4 flex justify-end">
+                  <button
+                    onClick={handleImportCSV}
+                    className={BLUELINX_COLORS.buttonPrimary}
+                    disabled={!csvFile}
+                  >
+                    Upload
+                  </button>
+                </div>
+              </>
+            ) : (
+              <form onSubmit={handleAddInventorySubmit} className="space-y-4">
+                <div>
+                  <label
+                    htmlFor="modelNumber"
+                    className="block text-sm font-medium text-gray-700"
+                  >
+                    Model Number
+                  </label>
+                  <input
+                    type="text"
+                    name="modelNumber"
+                    id="modelNumber"
+                    value={newInventoryItem.modelNumber}
+                    onChange={handleNewInventoryItemChange}
+                    className={BLUELINX_COLORS.inputStyle}
+                    required
+                  />
+                </div>
+                <div>
+                  <label
+                    htmlFor="category"
+                    className="block text-sm font-medium text-gray-700"
+                  >
+                    Category
+                  </label>
+                  <input
+                    type="text"
+                    name="category"
+                    id="category"
+                    value={newInventoryItem.category}
+                    onChange={handleNewInventoryItemChange}
+                    className={BLUELINX_COLORS.inputStyle}
+                    required
+                  />
+                </div>
+                <div>
+                  <label
+                    htmlFor="amountInInventory"
+                    className="block text-sm font-medium text-gray-700"
+                  >
+                    Amount in Inventory
+                  </label>
+                  <input
+                    type="number"
+                    name="amountInInventory"
+                    id="amountInInventory"
+                    value={newInventoryItem.amountInInventory}
+                    onChange={handleNewInventoryItemChange}
+                    min="0"
+                    className={BLUELINX_COLORS.inputStyle}
+                    required
+                  />
+                </div>
+                <div>
+                  <label
+                    htmlFor="numOnOrder"
+                    className="block text-sm font-medium text-gray-700"
+                  >
+                    Number on Order
+                  </label>
+                  <input
+                    type="number"
+                    name="numOnOrder"
+                    id="numOnOrder"
+                    value={newInventoryItem.numOnOrder}
+                    onChange={handleNewInventoryItemChange}
+                    min="0"
+                    className={BLUELINX_COLORS.inputStyle}
+                  />
+                </div>
+                <div>
+                  <label
+                    htmlFor="manufactureName"
+                    className="block text-sm font-medium text-gray-700"
+                  >
+                    Manufacture Name
+                  </label>
+                  <input
+                    type="text"
+                    name="manufactureName"
+                    id="manufactureName"
+                    value={newInventoryItem.manufactureName}
+                    onChange={handleNewInventoryItemChange}
+                    className={BLUELINX_COLORS.inputStyle}
+                  />
+                </div>
+                <div>
+                  <label
+                    htmlFor="imageUrl"
+                    className="block text-sm font-medium text-gray-700"
+                  >
+                    Image URL
+                  </label>
+                  <input
+                    type="url"
+                    name="imageUrl"
+                    id="imageUrl"
+                    value={newInventoryItem.imageUrl}
+                    onChange={handleNewInventoryItemChange}
+                    className={BLUELINX_COLORS.inputStyle}
+                    placeholder="e.g., https://example.com/image.jpg"
+                  />
+                </div>
+                <div>
+                  <label
+                    htmlFor="assignedBranchId"
+                    className="block text-sm font-medium text-gray-700"
+                  >
+                    Assigned Branch (Short Code)
+                  </label>
+                  <select
+                    name="assignedBranchId"
+                    id="assignedBranchId"
+                    value={newInventoryItem.assignedBranchId}
+                    onChange={handleNewInventoryItemChange}
+                    className={BLUELINX_COLORS.inputStyle}
+                  >
+                    <option value="">Select Branch</option>
+                    {warehouses.map((wh) => (
+                      <option key={wh.id} value={wh.id}>
+                        {wh.name} ({wh.shortCode})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="flex justify-end pt-4">
+                  <button
+                    type="submit"
+                    className={BLUELINX_COLORS.buttonPrimary}
+                  >
+                    Add Item
+                  </button>
+                </div>
+              </form>
+            )}
+          </Modal>
+        </>
+      )}
+    </div>
+  );
+};
+
+// Purchase Orders Page
+const PurchaseOrders = ({
+  db,
+  userId,
+  showMessage,
+  openEquipmentModalForPOItem,
+}) => {
+  const [purchaseOrders, setPurchaseOrders] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [selectedPO, setSelectedPO] = useState(null);
+  const [isReceiveModalOpen, setIsReceiveModalOpen] = useState(false);
+  const [lineItemQuantities, setLineItemQuantities] = useState({});
+
+  // New state for adding PO manually
+  const [isAddPOModalOpen, setIsAddPOModalOpen] = useState(false);
+  const [newPOData, setNewPOData] = useState({
+    orderNumber: "",
+    vendor: "",
+    manufacture: "", // Added manufacture field
+    receivingWarehouseId: "", // Added receivingWarehouseId
+    items: [], // Array to hold line items
+  });
+  const [newLineItem, setNewLineItem] = useState({
+    itemName: "",
+    modelNumber: "",
+    amountOrdered: "", // Keep as string for input, parse later
+    category: "",
+    orderCost: "", // Keep as string for input, parse later
+  });
+
+  const [warehouses, setWarehouses] = useState([]); // State to hold warehouses for dropdown
+
+  // Fetch Warehouses for the dropdown
+  useEffect(() => {
+    if (!db || !userId) return;
+    const warehousesCollectionRef = collection(
+      db,
+      `artifacts/${__app_id}/users/${userId}/warehouses`
+    );
+    const unsubscribe = onSnapshot(
+      warehousesCollectionRef,
+      (snapshot) => {
+        setWarehouses(
+          snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
+        );
+      },
+      (error) => {
+        console.error("Error fetching warehouses for PO dropdown: ", error);
+      }
+    );
+    return () => unsubscribe();
+  }, [db, userId]);
+
+  const warehouseMap = useMemo(() => {
+    return warehouses.reduce((map, wh) => ({ ...map, [wh.id]: wh.name }), {});
+  }, [warehouses]);
+
+  // Fetch Purchase Orders
+  useEffect(() => {
+    if (!db || !userId) return;
+    setLoading(true);
+    const poCollectionRef = collection(
+      db,
+      `artifacts/${__app_id}/users/${userId}/purchaseOrders`
+    );
+
+    const unsubscribe = onSnapshot(
+      poCollectionRef,
+      (snapshot) => {
+        const poData = snapshot.docs.map((doc) => ({
+          id: doc.id,
+          ...doc.data(),
+        }));
+        setPurchaseOrders(poData.filter((po) => po.status === "pending")); // Only show pending POs
+        setLoading(false);
+      },
+      (error) => {
+        console.error("Error fetching purchase orders: ", error);
+        showMessage("Error fetching purchase orders.", "error");
+        setLoading(false);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [db, userId, showMessage]);
+
+  // Handle "Receive Entire PO"
+  const handleReceiveEntirePO = async (po) => {
+    showMessage(
+      `Are you sure you want to receive the entire PO #${po.orderNumber}?`,
+      "confirm",
+      async () => {
+        const batch = writeBatch(db);
+        const poDocRef = doc(
+          db,
+          `artifacts/${__app_id}/users/${userId}/purchaseOrders`,
+          po.id
+        );
+        const poHistoryCollectionRef = collection(
+          db,
+          `artifacts/${__app_id}/users/${userId}/poHistory`
+        );
+        const inventoryCollectionRef = collection(
+          db,
+          `artifacts/${__app_id}/users/${userId}/inventory`
+        );
+
+        for (const item of po.items) {
+          // Removed the checkModelExisting validation and the associated modal prompt
+          const q = query(
+            inventoryCollectionRef,
+            where("modelNumber", "==", item.modelNumber)
+          );
+          const querySnapshot = await getDocs(q);
+
+          if (!querySnapshot.empty) {
+            const inventoryDoc = querySnapshot.docs[0];
+            const currentAmount = inventoryDoc.data().amountInInventory || 0;
+            const currentOnOrder = inventoryDoc.data().numOnOrder || 0;
+            const newAmount =
+              currentAmount + (parseInt(item.amountOrdered) || 0);
+            const newOnOrder = Math.max(
+              0,
+              currentOnOrder - (parseInt(item.amountOrdered) || 0)
+            );
+            const inventoryItemRef = doc(
+              db,
+              `artifacts/${__app_id}/users/${userId}/inventory`,
+              inventoryDoc.id
+            );
+            batch.update(inventoryItemRef, {
+              amountInInventory: newAmount,
+              numOnOrder: newOnOrder,
+            });
+          } else {
+            // Use doc(collectionRef) to get a new document reference with an auto-generated ID
+            batch.set(doc(inventoryCollectionRef), {
+              modelNumber: item.modelNumber,
+              category: item.category,
+              amountInInventory: parseInt(item.amountOrdered) || 0,
+              numOnOrder: 0,
+              manufactureName: item.manufactureName || "",
+              imageUrl:
+                item.imageUrl ||
+                "https://placehold.co/100x100/eeeeee/333333?text=No+Image",
+              assignedBranchId: po.receivingWarehouseId || "", // Assign to receiving warehouse
+            });
+          }
+        }
+
+        const newPoHistoryDocRef = doc(poHistoryCollectionRef);
+        batch.set(newPoHistoryDocRef, {
+          ...po,
+          status: "received",
+          receivedDate: new Date().toISOString(),
+        });
+        batch.delete(poDocRef);
+
+        console.log("Attempting to commit batch for PO:", po.orderNumber);
+        try {
+          await batch.commit();
+          console.log("Batch committed successfully for PO:", po.orderNumber);
+          showMessage(
+            `PO #${po.orderNumber} received successfully and moved to history!`,
+            "success"
+          );
+        } catch (e) {
+          console.error("Batch commit failed for PO:", po.orderNumber, e);
+          showMessage(
+            `Failed to receive PO #${po.orderNumber}. Error: ${e.message}`,
+            "error"
+          );
+        }
+      }
+    );
+  };
+
+  // Handle opening Receive by Line Item modal
+  const handleOpenReceiveLineItem = (po) => {
+    setSelectedPO(po);
+    const initialQuantities = po.items.reduce(
+      (acc, item) => ({ ...acc, [item.modelNumber]: 0 }),
+      {}
+    );
+    setLineItemQuantities(initialQuantities);
+    setIsReceiveModalOpen(true);
+  };
+
+  // Handle change in line item quantity input
+  const handleLineItemQtyChange = (modelNumber, value) => {
+    setLineItemQuantities((prev) => ({
+      ...prev,
+      [modelNumber]: Math.max(0, parseInt(value) || 0),
+    }));
+  };
+
+  // Handle "Receive Selected Line Items"
+  const handleReceiveSelectedLineItems = async () => {
+    if (!selectedPO) return;
+
+    const itemsToReceive = selectedPO.items.filter(
+      (item) => lineItemQuantities[item.modelNumber] > 0
+    );
+
+    if (itemsToReceive.length === 0) {
+      showMessage(
+        "No items selected or quantity entered for receipt.",
+        "error"
+      );
+      return;
+    }
+
+    showMessage(
+      `Are you sure you want to receive selected items for PO #${selectedPO.orderNumber}?`,
+      "confirm",
+      async () => {
+        const batch = writeBatch(db);
+        const poDocRef = doc(
+          db,
+          `artifacts/${__app_id}/users/${userId}/purchaseOrders`,
+          selectedPO.id
+        );
+        const poHistoryCollectionRef = collection(
+          db,
+          `artifacts/${__app_id}/users/${userId}/poHistory`
+        );
+        const inventoryCollectionRef = collection(
+          db,
+          `artifacts/${__app_id}/users/${userId}/inventory`
+        );
+
+        let allItemsReceived = true;
+        let updatedPOItems = [...selectedPO.items];
+
+        for (const item of itemsToReceive) {
+          const qtyToReceive = lineItemQuantities[item.modelNumber];
+
+          if (qtyToReceive > (parseInt(item.amountOrdered) || 0)) {
+            showMessage(
+              `Quantity to receive for ${item.itemName} (${item.modelNumber}) exceeds amount ordered.`,
+              "error"
+            );
+            return;
+          }
+
+          // Removed the checkModelExisting validation and the associated modal prompt
+          const q = query(
+            inventoryCollectionRef,
+            where("modelNumber", "==", item.modelNumber)
+          );
+          const querySnapshot = await getDocs(q);
+
+          if (!querySnapshot.empty) {
+            const inventoryDoc = querySnapshot.docs[0];
+            const currentAmount = inventoryDoc.data().amountInInventory || 0;
+            const currentOnOrder = inventoryDoc.data().numOnOrder || 0;
+            const newAmount = currentAmount + qtyToReceive;
+            const newOnOrder = Math.max(0, currentOnOrder - qtyToReceive);
+            const inventoryItemRef = doc(
+              db,
+              `artifacts/${__app_id}/users/${userId}/inventory`,
+              inventoryDoc.id
+            );
+            batch.update(inventoryItemRef, {
+              amountInInventory: newAmount,
+              numOnOrder: newOnOrder,
+            });
+          } else {
+            // Use doc(collectionRef) to get a new document reference with an auto-generated ID
+            batch.set(doc(inventoryCollectionRef), {
+              modelNumber: item.modelNumber,
+              category: item.category,
+              amountInInventory: qtyToReceive,
+              numOnOrder: 0,
+              manufactureName: item.manufactureName || "",
+              imageUrl:
+                item.imageUrl ||
+                "https://placehold.co/100x100/eeeeee/333333?text=No+Image",
+              assignedBranchId: selectedPO.receivingWarehouseId || "", // Assign to receiving warehouse
+            });
+          }
+
+          const itemIndex = updatedPOItems.findIndex(
+            (i) => i.modelNumber === item.modelNumber
+          );
+          if (itemIndex > -1) {
+            updatedPOItems[itemIndex] = {
+              ...updatedPOItems[itemIndex],
+              amountOrdered:
+                (parseInt(updatedPOItems[itemIndex].amountOrdered) || 0) -
+                qtyToReceive,
+            };
+          }
+        }
+
+        allItemsReceived = updatedPOItems.every(
+          (item) => (parseInt(item.amountOrdered) || 0) <= 0
+        );
+
+        if (allItemsReceived) {
+          const newPoHistoryDocRef = doc(poHistoryCollectionRef);
+          batch.set(newPoHistoryDocRef, {
+            ...selectedPO,
+            items: selectedPO.items.map((i) => ({
+              ...i,
+              amountReceived:
+                (i.amountReceived || 0) +
+                (lineItemQuantities[i.modelNumber] || 0),
+            })),
+            status: "received",
+            receivedDate: new Date().toISOString(),
+          });
+          batch.delete(poDocRef);
+        } else {
+          batch.update(poDocRef, { items: updatedPOItems });
+        }
+
+        console.log(
+          "Attempting to commit batch for PO:",
+          selectedPO.orderNumber
+        );
+        try {
+          await batch.commit();
+          console.log(
+            "Batch committed successfully for PO:",
+            selectedPO.orderNumber
+          );
+          showMessage(
+            `Selected items for PO #${selectedPO.orderNumber} received successfully!`,
+            "success"
+          );
+          setIsReceiveModalOpen(false);
+          setSelectedPO(null);
+          setLineItemQuantities({});
+        } catch (e) {
+          console.error(
+            "Batch commit failed for PO:",
+            selectedPO.orderNumber,
+            e
+          );
+          showMessage(
+            `Failed to receive selected items for PO #${selectedPO.orderNumber}. Error: ${e.message}`,
+            "error"
+          );
+        }
+      }
+    );
+  };
+
+  // Handlers for adding new PO manually
+  const handleAddPOFormChange = (e) => {
+    const { name, value } = e.target;
+    setNewPOData((prev) => ({ ...prev, [name]: value }));
+  };
+
+  const handleNewLineItemChange = (e) => {
+    const { name, value } = e.target;
+    setNewLineItem((prev) => ({ ...prev, [name]: value }));
+  };
+
+  const handleAddLineItem = () => {
+    if (
+      !newLineItem.itemName ||
+      !newLineItem.modelNumber ||
+      (parseInt(newLineItem.amountOrdered) || 0) <= 0
+    ) {
+      showMessage(
+        "Please fill in all required fields for the line item and ensure quantity is positive.",
+        "error"
+      );
+      return;
+    }
+
+    setNewPOData((prev) => ({
+      ...prev,
+      items: [
+        ...prev.items,
+        {
+          itemName: newLineItem.itemName,
+          modelNumber: newLineItem.modelNumber,
+          amountOrdered: parseInt(newLineItem.amountOrdered) || 0,
+          category: newLineItem.category,
+          orderCost: parseFloat(newLineItem.orderCost) || 0,
+          amountReceived: 0,
+        },
+      ],
+    }));
+    setNewLineItem({
+      itemName: "",
+      modelNumber: "",
+      amountOrdered: "",
+      category: "",
+      orderCost: "",
+    });
+  };
+
+  const handleRemoveLineItem = (indexToRemove) => {
+    setNewPOData((prev) => ({
+      ...prev,
+      items: prev.items.filter((_, index) => index !== indexToRemove),
+    }));
+  };
+
+  const handleCreateNewPO = async (e) => {
+    e.preventDefault();
+    if (
+      !newPOData.orderNumber ||
+      !newPOData.vendor ||
+      !newPOData.receivingWarehouseId ||
+      newPOData.items.length === 0
+    ) {
+      showMessage(
+        "Please fill in order number, vendor, receiving warehouse, and add at least one item.",
+        "error"
+      );
+      return;
+    }
+
+    try {
+      // Use doc(collectionRef) to get a new document reference with an auto-generated ID
+      await setDoc(
+        doc(
+          collection(db, `artifacts/${__app_id}/users/${userId}/purchaseOrders`)
+        ),
+        {
+          orderNumber: newPOData.orderNumber,
+          vendor: newPOData.vendor,
+          manufacture: newPOData.manufacture, // Save manufacture
+          receivingWarehouseId: newPOData.receivingWarehouseId, // Save receiving warehouse
+          items: newPOData.items,
+          status: "pending",
+          orderDate: new Date().toISOString(),
+        }
+      );
+      showMessage("New Purchase Order created successfully!", "success");
+      setIsAddPOModalOpen(false);
+      setNewPOData({
+        orderNumber: "",
+        vendor: "",
+        manufacture: "",
+        receivingWarehouseId: "",
+        items: [],
+      });
+      setNewLineItem({
+        itemName: "",
+        modelNumber: "",
+        amountOrdered: "",
+        category: "",
+        orderCost: "",
+      });
+    } catch (e) {
+      console.error("Error creating new PO: ", e);
+      showMessage("Failed to create new Purchase Order.", "error");
+    }
+  };
+
+  const poColumns = [
+    { key: "orderNumber", label: "Order #", sortable: true },
+    { key: "vendor", label: "Vendor", sortable: true },
+    { key: "manufacture", label: "Manufacture", sortable: true }, // Display manufacture
+    {
+      key: "receivingWarehouseId",
+      label: "Receiving Warehouse",
+      sortable: true,
+      render: (po) =>
+        warehouseMap[po.receivingWarehouseId] ||
+        po.receivingWarehouseId ||
+        "N/A",
+    }, // Display receiving warehouse
+    {
+      key: "itemDetails",
+      label: "Items",
+      render: (po) => (
+        <ul className="list-disc list-inside">
+          {po.items &&
+            po.items.map((item, index) => (
+              <li key={index}>
+                {item.itemName} ({item.modelNumber}) - {item.amountOrdered} pcs
+              </li>
+            ))}
+        </ul>
+      ),
+    },
+    {
+      key: "orderCost",
+      label: "Total Cost",
+      render: (po) =>
+        `$${
+          po.items
+            ? po.items
+                .reduce(
+                  (sum, item) =>
+                    sum +
+                    (parseFloat(item.orderCost) || 0) *
+                      (parseInt(item.amountOrdered) || 0),
+                  0
+                )
+                .toFixed(2)
+            : "0.00"
+        }`,
+    },
+    {
+      key: "status",
+      label: "Status",
+      sortable: true,
+      render: (po) => (
+        <span
+          className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
+            po.status === "pending"
+              ? BLUELINX_COLORS.pendingOrange
+              : BLUELINX_COLORS.successGreen
+          }`}
+        >
+          {po.status}
+        </span>
+      ),
+    },
+  ];
+
+  const poFilterFields = [
+    { key: "vendor", label: "Vendor" },
+    { key: "status", label: "Status" },
+    { key: "manufacture", label: "Manufacture" }, // Filter by manufacture
+    { key: "receivingWarehouseId", label: "Receiving Warehouse" }, // Filter by receiving warehouse
+  ];
+
+  const poSearchFields = ["orderNumber", "vendor", "manufacture"];
+
+  return (
+    <div className="container mx-auto p-4">
+      {loading ? (
+        <LoadingSpinner />
+      ) : (
+        <>
+          <DataTable
+            title="Pending Purchase Orders"
+            data={purchaseOrders}
+            columns={poColumns}
+            filterFields={poFilterFields}
+            searchFields={poSearchFields}
+            initialSortColumn="orderNumber"
+            actions={[
+              {
+                label: "Add New PO",
+                onClick: () => setIsAddPOModalOpen(true),
+                className: BLUELINX_COLORS.buttonPrimary,
+              },
+              {
+                label: "Receive Entire PO",
+                onClick: (po) => handleReceiveEntirePO(po),
+                render: (po) => (
+                  <button
+                    key={`receive-full-${po.id}`} // Unique key
+                    onClick={() => handleReceiveEntirePO(po)}
+                    className={`${BLUELINX_COLORS.buttonPrimary} text-xs py-1 px-2`}
+                  >
+                    Receive Full
+                  </button>
+                ),
+              },
+              {
+                label: "Receive Line Items",
+                onClick: (po) => handleOpenReceiveLineItem(po),
+                render: (po) => (
+                  <button
+                    key={`receive-line-${po.id}`} // Unique key
+                    onClick={() => handleOpenReceiveLineItem(po)}
+                    className={`${BLUELINX_COLORS.buttonSecondary} text-xs py-1 px-2`}
+                  >
+                    Receive By Line
+                  </button>
+                ),
+              },
+            ]}
+          />
+
+          {/* Modal for Receive by Line Item */}
+          <Modal
+            isOpen={isReceiveModalOpen}
+            onClose={() => setIsReceiveModalOpen(false)}
+            title={`Receive Items for PO #${selectedPO?.orderNumber}`}
+          >
+            <p className="mb-4 text-gray-700">
+              Enter quantity received for each line item:
+            </p>
+            {selectedPO?.items && selectedPO.items.length > 0 ? (
+              <ul className="space-y-3">
+                {selectedPO.items.map((item) => (
+                  <li
+                    key={item.modelNumber}
+                    className="flex items-center justify-between p-3 border rounded-md bg-gray-50"
+                  >
+                    <span className="font-medium text-gray-800">
+                      {item.itemName} ({item.modelNumber}) - Ordered:{" "}
+                      {item.amountOrdered}
+                    </span>
+                    <input
+                      type="number"
+                      min="0"
+                      max={item.amountOrdered}
+                      value={lineItemQuantities[item.modelNumber] || 0}
+                      onChange={(e) =>
+                        handleLineItemQtyChange(
+                          item.modelNumber,
+                          e.target.value
+                        )
+                      }
+                      className={`${BLUELINX_COLORS.inputStyle} w-24 text-center`}
+                    />
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-gray-500">No items in this Purchase Order.</p>
+            )}
+            <div className="mt-6 flex justify-end">
+              <button
+                onClick={handleReceiveSelectedLineItems}
+                className={BLUELINX_COLORS.buttonPrimary}
+              >
+                Receive Selected Items
+              </button>
+            </div>
+          </Modal>
+
+          {/* Modal for Add New PO Manually */}
+          <Modal
+            isOpen={isAddPOModalOpen}
+            onClose={() => setIsAddPOModalOpen(false)}
+            title="Add New Purchase Order"
+          >
+            <form onSubmit={handleCreateNewPO} className="space-y-4">
+              <div>
+                <label
+                  htmlFor="orderNumber"
+                  className="block text-sm font-medium text-gray-700"
+                >
+                  Order Number
+                </label>
+                <input
+                  type="text"
+                  name="orderNumber"
+                  id="orderNumber"
+                  value={newPOData.orderNumber}
+                  onChange={handleAddPOFormChange}
+                  className={BLUELINX_COLORS.inputStyle}
+                  required
+                />
+              </div>
+              <div>
+                <label
+                  htmlFor="vendor"
+                  className="block text-sm font-medium text-gray-700"
+                >
+                  Vendor
+                </label>
+                <input
+                  type="text"
+                  name="vendor"
+                  id="vendor"
+                  value={newPOData.vendor}
+                  onChange={handleAddPOFormChange}
+                  className={BLUELINX_COLORS.inputStyle}
+                  required
+                />
+              </div>
+              <div>
+                <label
+                  htmlFor="manufacture"
+                  className="block text-sm font-medium text-gray-700"
+                >
+                  Manufacture
+                </label>
+                <input
+                  type="text"
+                  name="manufacture"
+                  id="manufacture"
+                  value={newPOData.manufacture}
+                  onChange={handleAddPOFormChange}
+                  className={BLUELINX_COLORS.inputStyle}
+                />
+              </div>
+              <div>
+                <label
+                  htmlFor="receivingWarehouseId"
+                  className="block text-sm font-medium text-gray-700"
+                >
+                  Receiving Warehouse
+                </label>
+                <select
+                  name="receivingWarehouseId"
+                  id="receivingWarehouseId"
+                  value={newPOData.receivingWarehouseId}
+                  onChange={handleAddPOFormChange}
+                  className={BLUELINX_COLORS.inputStyle}
+                  required
+                >
+                  <option value="">Select Receiving Warehouse</option>
+                  {warehouses.map((wh) => (
+                    <option key={wh.id} value={wh.id}>
+                      {wh.name} ({wh.shortCode})
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {/* Line Items Section */}
+              <div className="border p-4 rounded-md bg-gray-50">
+                <h4 className="text-md font-semibold mb-3">Line Items</h4>
+                {newPOData.items.length > 0 ? (
+                  <ul className="space-y-2 mb-4 max-h-48 overflow-y-auto">
+                    {newPOData.items.map((item, index) => (
+                      <li
+                        key={index}
+                        className="flex items-center justify-between text-sm bg-white p-2 rounded shadow-sm"
+                      >
+                        <span>
+                          {item.itemName} ({item.modelNumber}) - Qty:{" "}
+                          {item.amountOrdered} - Cost: $
+                          {item.orderCost.toFixed(2)}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveLineItem(index)}
+                          className="text-red-600 hover:text-red-800 ml-2"
+                        >
+                          Remove
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="text-gray-500 mb-4">No line items added yet.</p>
+                )}
+                <div className="grid grid-cols-2 gap-3 mb-3">
+                  <div>
+                    <label
+                      htmlFor="newLineItemName"
+                      className="block text-xs font-medium text-gray-700"
+                    >
+                      Item Name
+                    </label>
+                    <input
+                      type="text"
+                      name="itemName"
+                      id="newLineItemName"
+                      value={newLineItem.itemName}
+                      onChange={handleNewLineItemChange}
+                      className={BLUELINX_COLORS.inputStyle}
+                      placeholder="Item Name"
+                    />
+                  </div>
+                  <div>
+                    <label
+                      htmlFor="newLineModelNumber"
+                      className="block text-xs font-medium text-gray-700"
+                    >
+                      Model Number
+                    </label>
+                    <input
+                      type="text"
+                      name="modelNumber"
+                      id="newLineModelNumber"
+                      value={newLineItem.modelNumber}
+                      onChange={handleNewLineItemChange}
+                      className={BLUELINX_COLORS.inputStyle}
+                      placeholder="Model Number"
+                    />
+                  </div>
+                  <div>
+                    <label
+                      htmlFor="newLineAmountOrdered"
+                      className="block text-xs font-medium text-gray-700"
+                    >
+                      Amount Ordered
+                    </label>
+                    <input
+                      type="number"
+                      name="amountOrdered"
+                      id="newLineAmountOrdered"
+                      value={newLineItem.amountOrdered}
+                      onChange={handleNewLineItemChange}
+                      min="1"
+                      className={BLUELINX_COLORS.inputStyle}
+                      placeholder="Quantity"
+                    />
+                  </div>
+                  <div>
+                    <label
+                      htmlFor="newLineCategory"
+                      className="block text-xs font-medium text-gray-700"
+                    >
+                      Category
+                    </label>
+                    <input
+                      type="text"
+                      name="category"
+                      id="newLineCategory"
+                      value={newLineItem.category}
+                      onChange={handleNewLineItemChange}
+                      className={BLUELINX_COLORS.inputStyle}
+                      placeholder="Category"
+                    />
+                  </div>
+                  <div className="col-span-2">
+                    <label
+                      htmlFor="newLineOrderCost"
+                      className="block text-xs font-medium text-gray-700"
+                    >
+                      Order Cost (per item)
+                    </label>
+                    <input
+                      type="number"
+                      name="orderCost"
+                      id="newLineOrderCost"
+                      value={newLineItem.orderCost}
+                      onChange={handleNewLineItemChange}
+                      min="0"
+                      step="0.01"
+                      className={BLUELINX_COLORS.inputStyle}
+                      placeholder="Cost"
+                    />
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleAddLineItem}
+                  className={`${BLUELINX_COLORS.buttonSecondary} text-sm py-1 px-3`}
+                >
+                  Add Line Item
+                </button>
+              </div>
+              <div className="flex justify-end pt-4">
+                <button type="submit" className={BLUELINX_COLORS.buttonPrimary}>
+                  Create PO
+                </button>
+              </div>
+            </form>
+          </Modal>
+        </>
+      )}
+    </div>
+  );
+};
+
+// Purchase Order History Page
+const POHistory = ({ db, userId, showMessage }) => {
+  const [poHistory, setPoHistory] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [isEditPOHistoryModalOpen, setIsEditPOHistoryModalOpen] =
+    useState(false);
+  const [currentPOHistoryItem, setCurrentPOHistoryItem] = useState(null);
+  const [editPOData, setEditPOData] = useState({
+    orderNumber: "",
+    vendor: "",
+    manufacture: "", // Added manufacture field
+    receivingWarehouseId: "", // Added receivingWarehouseId
+    items: [],
+  });
+  const [editLineItem, setEditLineItem] = useState({
+    itemName: "",
+    modelNumber: "",
+    amountOrdered: "",
+    category: "",
+    orderCost: "",
+    amountReceived: "",
+  });
+
+  // Fetch PO History
+  useEffect(() => {
+    if (!db || !userId) return;
+    setLoading(true);
+    const poHistoryCollectionRef = collection(
+      db,
+      `artifacts/${__app_id}/users/${userId}/poHistory`
+    );
+
+    const unsubscribe = onSnapshot(
+      poHistoryCollectionRef,
+      (snapshot) => {
+        const historyData = snapshot.docs.map((doc) => ({
+          id: doc.id,
+          ...doc.data(),
+        }));
+        setPoHistory(historyData);
+        setLoading(false);
+      },
+      (error) => {
+        console.error("Error fetching PO history: ", error);
+        showMessage("Error fetching purchase order history.", "error");
+        setLoading(false);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [db, userId, showMessage]);
+
+  // Handlers for editing PO history
+  const handleEditPOHistory = (po) => {
+    setCurrentPOHistoryItem(po);
+    setEditPOData({
+      orderNumber: po.orderNumber,
+      vendor: po.vendor,
+      manufacture: po.manufacture || "",
+      receivingWarehouseId: po.receivingWarehouseId || "",
+      items: po.items || [],
+    });
+    setIsEditPOHistoryModalOpen(true);
+  };
+
+  const handleEditPOFormChange = (e) => {
+    const { name, value } = e.target;
+    setEditPOData((prev) => ({ ...prev, [name]: value }));
+  };
+
+  const handleEditLineItemChange = (e) => {
+    const { name, value } = e.target;
+    setEditLineItem((prev) => ({ ...prev, [name]: value }));
+  };
+
+  const handleAddEditLineItem = () => {
+    if (
+      !editLineItem.itemName ||
+      !editLineItem.modelNumber ||
+      (parseInt(editLineItem.amountOrdered) || 0) <= 0
+    ) {
+      showMessage(
+        "Please fill in all required fields for the line item and ensure quantity is positive.",
+        "error"
+      );
+      return;
+    }
+
+    setEditPOData((prev) => ({
+      ...prev,
+      items: [
+        ...prev.items,
+        {
+          itemName: editLineItem.itemName,
+          modelNumber: editLineItem.modelNumber,
+          amountOrdered: parseInt(editLineItem.amountOrdered) || 0,
+          category: editLineItem.category,
+          orderCost: parseFloat(editLineItem.orderCost) || 0,
+          amountReceived: parseInt(editLineItem.amountReceived) || 0,
+        },
+      ],
+    }));
+    setEditLineItem({
+      itemName: "",
+      modelNumber: "",
+      amountOrdered: "",
+      category: "",
+      orderCost: "",
+      amountReceived: "",
+    });
+  };
+
+  const handleRemoveEditLineItem = (indexToRemove) => {
+    setEditPOData((prev) => ({
+      ...prev,
+      items: prev.items.filter((_, index) => index !== indexToRemove),
+    }));
+  };
+
+  const handleUpdatePOHistory = async (e) => {
+    e.preventDefault();
+    if (!currentPOHistoryItem) return;
+
+    if (
+      !editPOData.orderNumber ||
+      !editPOData.vendor ||
+      editPOData.items.length === 0
+    ) {
+      showMessage(
+        "Please fill in order number, vendor, and add at least one item.",
+        "error"
+      );
+      return;
+    }
+
+    try {
+      await updateDoc(
+        doc(
+          db,
+          `artifacts/${__app_id}/users/${userId}/poHistory`,
+          currentPOHistoryItem.id
+        ),
+        {
+          orderNumber: editPOData.orderNumber,
+          vendor: editPOData.vendor,
+          manufacture: editPOData.manufacture,
+          receivingWarehouseId: editPOData.receivingWarehouseId,
+          items: editPOData.items,
+          // Preserve original status and receivedDate
+          status: currentPOHistoryItem.status,
+          receivedDate: currentPOHistoryItem.receivedDate,
+        }
+      );
+      showMessage("Purchase Order history updated successfully!", "success");
+      setIsEditPOHistoryModalOpen(false);
+      setCurrentPOHistoryItem(null);
+    } catch (e) {
+      console.error("Error updating PO history: ", e);
+      showMessage("Failed to update Purchase Order history.", "error");
+    }
+  };
+
+  // Handler for deleting PO from history (audit trail method)
+  const handleDeletePOHistory = (poToDelete) => {
+    showMessage(
+      `Are you sure you want to mark PO #${poToDelete.orderNumber} as DELETED? This will create a new deletion record in history.`,
+      "confirm",
+      async () => {
+        try {
+          // Create a clean, serializable copy of the PO data
+          const cleanPoData = {
+            orderNumber: poToDelete.orderNumber,
+            vendor: poToDelete.vendor,
+            manufacture: poToDelete.manufacture || "",
+            receivingWarehouseId: poToDelete.receivingWarehouseId || "",
+            items: poToDelete.items
+              ? poToDelete.items.map((item) => ({
+                  itemName: item.itemName,
+                  modelNumber: item.modelNumber,
+                  amountOrdered: item.amountOrdered,
+                  category: item.category,
+                  orderCost: item.orderCost,
+                  amountReceived: item.amountReceived,
+                }))
+              : [],
+            status: poToDelete.status,
+            receivedDate: poToDelete.receivedDate,
+          };
+
+          // Use doc(collectionRef) to get a new document reference with an auto-generated ID
+          await setDoc(
+            doc(
+              collection(db, `artifacts/${__app_id}/users/${userId}/poHistory`)
+            ),
+            {
+              ...cleanPoData, // Use the cleaned data
+              orderNumber: `DELETED: ${poToDelete.orderNumber}`, // Mark as deleted
+              status: "deleted", // Set status to deleted
+              deletedDate: new Date().toISOString(), // Add deletion timestamp
+            }
+          );
+          showMessage(
+            `PO #${poToDelete.orderNumber} marked as deleted in history!`,
+            "success"
+          );
+        } catch (e) {
+          console.error("Error deleting PO from history: ", e);
+          showMessage("Failed to mark PO as deleted in history.", "error");
+        }
+      }
+    );
+  };
+
+  const poHistoryColumns = [
+    { key: "orderNumber", label: "Order #", sortable: true },
+    { key: "vendor", label: "Vendor", sortable: true },
+    { key: "manufacture", label: "Manufacture", sortable: true }, // Display manufacture
+    {
+      key: "receivingWarehouseId",
+      label: "Receiving Warehouse",
+      sortable: true,
+      render: (po) =>
+        warehouseMap[po.receivingWarehouseId] ||
+        po.receivingWarehouseId ||
+        "N/A",
+    }, // Display receiving warehouse
+    {
+      key: "itemDetails",
+      label: "Items (Ordered/Received)",
+      render: (po) => (
+        <ul className="list-disc list-inside">
+          {po.items &&
+            po.items.map((item, index) => (
+              <li key={index}>
+                {item.itemName} ({item.modelNumber}) - Ordered:{" "}
+                {item.amountOrdered} / Received:{" "}
+                {item.amountReceived || item.amountOrdered}
+              </li>
+            ))}
+        </ul>
+      ),
+    },
+    {
+      key: "orderCost",
+      label: "Total Cost",
+      render: (po) =>
+        `$${
+          po.items
+            ? po.items
+                .reduce(
+                  (sum, item) =>
+                    sum +
+                    (parseFloat(item.orderCost) || 0) *
+                      (parseInt(item.amountReceived) ||
+                        parseInt(item.amountOrdered) ||
+                        0),
+                  0
+                )
+                .toFixed(2)
+            : "0.00"
+        }`,
+    },
+    {
+      key: "status",
+      label: "Status",
+      sortable: true,
+      render: (po) => (
+        <span
+          className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full
+        ${po.status === "received" ? BLUELINX_COLORS.successGreen : ""}
+        ${po.status === "deleted" ? "bg-red-500 text-white" : ""}
+      `}
+        >
+          {po.status}
+        </span>
+      ),
+    },
+    {
+      key: "receivedDate",
+      label: "Received Date",
+      sortable: true,
+      render: (po) =>
+        po.receivedDate
+          ? new Date(po.receivedDate).toLocaleDateString()
+          : "N/A",
+    },
+    {
+      key: "deletedDate",
+      label: "Deleted Date",
+      sortable: true,
+      render: (po) =>
+        po.deletedDate ? new Date(po.deletedDate).toLocaleDateString() : "N/A",
+    },
+  ];
+
+  const poHistoryFilterFields = [
+    { key: "vendor", label: "Vendor" },
+    { key: "status", label: "Status" },
+    { key: "manufacture", label: "Manufacture" }, // Filter by manufacture
+    { key: "receivingWarehouseId", label: "Receiving Warehouse" }, // Filter by receiving warehouse
+  ];
+
+  const poHistorySearchFields = ["orderNumber", "vendor", "manufacture"];
+
+  return (
+    <div className="container mx-auto p-4">
+      {loading ? (
+        <LoadingSpinner />
+      ) : (
+        <>
+          <DataTable
+            title="Purchase Order History"
+            data={poHistory}
+            columns={poHistoryColumns}
+            filterFields={poHistoryFilterFields}
+            searchFields={poHistorySearchFields}
+            initialSortColumn="receivedDate"
+            initialSortDirection="desc"
+            actions={[
+              {
+                label: "Edit",
+                onClick: (po) => handleEditPOHistory(po),
+                render: (po) =>
+                  po.status !== "deleted" ? ( // Changed to ternary operator
+                    <button
+                      key={`edit-po-${po.id}`}
+                      onClick={() => handleEditPOHistory(po)}
+                      className={`${BLUELINX_COLORS.buttonSecondary} text-xs py-1 px-2`}
+                    >
+                      Edit
+                    </button>
+                  ) : null,
+              },
+              {
+                label: "Delete",
+                onClick: (po) => handleDeletePOHistory(po),
+                render: (po) =>
+                  po.status !== "deleted" ? ( // Changed to ternary operator
+                    <button
+                      key={`delete-po-${po.id}`}
+                      onClick={() => handleDeletePOHistory(po)}
+                      className={`bg-red-500 hover:bg-red-700 text-white font-bold py-1 px-2 rounded-md text-xs`}
+                    >
+                      Delete
+                    </button>
+                  ) : null,
+              },
+            ]}
+          />
+
+          {/* Modal for Editing PO History Item */}
+          <Modal
+            isOpen={isEditPOHistoryModalOpen}
+            onClose={() => setIsEditPOHistoryModalOpen(false)}
+            title={`Edit PO History: #${currentPOHistoryItem?.orderNumber}`}
+          >
+            <form onSubmit={handleUpdatePOHistory} className="space-y-4">
+              <div>
+                <label
+                  htmlFor="editOrderNumber"
+                  className="block text-sm font-medium text-gray-700"
+                >
+                  Order Number
+                </label>
+                <input
+                  type="text"
+                  name="orderNumber"
+                  id="editOrderNumber"
+                  value={editPOData.orderNumber}
+                  onChange={handleEditPOFormChange}
+                  className={BLUELINX_COLORS.inputStyle}
+                  required
+                />
+              </div>
+              <div>
+                <label
+                  htmlFor="editVendor"
+                  className="block text-sm font-medium text-gray-700"
+                >
+                  Vendor
+                </label>
+                <input
+                  type="text"
+                  name="vendor"
+                  id="editVendor"
+                  value={editPOData.vendor}
+                  onChange={handleEditPOFormChange}
+                  className={BLUELINX_COLORS.inputStyle}
+                  required
+                />
+              </div>
+              <div>
+                <label
+                  htmlFor="editManufacture"
+                  className="block text-sm font-medium text-gray-700"
+                >
+                  Manufacture
+                </label>
+                <input
+                  type="text"
+                  name="manufacture"
+                  id="editManufacture"
+                  value={editPOData.manufacture}
+                  onChange={handleEditPOFormChange}
+                  className={BLUELINX_COLORS.inputStyle}
+                />
+              </div>
+              {/* Note: Editing receiving warehouse for historical POs might be complex if it implies inventory changes.
+                   For simplicity, this example does not include editing it here. If needed, you'd add a select here
+                   and handle the logic to update inventory if the warehouse changes. */}
+              {/* Line Items Section for Edit */}
+              <div className="border p-4 rounded-md bg-gray-50">
+                <h4 className="text-md font-semibold mb-3">Line Items</h4>
+                {editPOData.items.length > 0 ? (
+                  <ul className="space-y-2 mb-4 max-h-48 overflow-y-auto">
+                    {editPOData.items.map((item, index) => (
+                      <li
+                        key={index}
+                        className="flex items-center justify-between text-sm bg-white p-2 rounded shadow-sm"
+                      >
+                        <span>
+                          {item.itemName} ({item.modelNumber}) - Ordered:{" "}
+                          {item.amountOrdered} / Received:{" "}
+                          {item.amountReceived || 0}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveEditLineItem(index)}
+                          className="text-red-600 hover:text-red-800 ml-2"
+                        >
+                          Remove
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="text-gray-500 mb-4">No line items added yet.</p>
+                )}
+                <div className="grid grid-cols-2 gap-3 mb-3">
+                  <div>
+                    <label
+                      htmlFor="editLineItemName"
+                      className="block text-xs font-medium text-gray-700"
+                    >
+                      Item Name
+                    </label>
+                    <input
+                      type="text"
+                      name="itemName"
+                      id="editLineItemName"
+                      value={editLineItem.itemName}
+                      onChange={handleEditLineItemChange}
+                      className={BLUELINX_COLORS.inputStyle}
+                      placeholder="Item Name"
+                    />
+                  </div>
+                  <div>
+                    <label
+                      htmlFor="editLineModelNumber"
+                      className="block text-xs font-medium text-gray-700"
+                    >
+                      Model Number
+                    </label>
+                    <input
+                      type="text"
+                      name="modelNumber"
+                      id="editLineModelNumber"
+                      value={editLineItem.modelNumber}
+                      onChange={handleEditLineItemChange}
+                      className={BLUELINX_COLORS.inputStyle}
+                      placeholder="Model Number"
+                    />
+                  </div>
+                  <div>
+                    <label
+                      htmlFor="editLineAmountOrdered"
+                      className="block text-xs font-medium text-gray-700"
+                    >
+                      Amount Ordered
+                    </label>
+                    <input
+                      type="number"
+                      name="amountOrdered"
+                      id="editLineAmountOrdered"
+                      value={editLineItem.amountOrdered}
+                      onChange={handleEditLineItemChange}
+                      min="1"
+                      className={BLUELINX_COLORS.inputStyle}
+                      placeholder="Quantity"
+                    />
+                  </div>
+                  <div>
+                    <label
+                      htmlFor="editLineCategory"
+                      className="block text-xs font-medium text-gray-700"
+                    >
+                      Category
+                    </label>
+                    <input
+                      type="text"
+                      name="category"
+                      id="editLineCategory"
+                      value={editLineItem.category}
+                      onChange={handleEditLineItemChange}
+                      className={BLUELINX_COLORS.inputStyle}
+                      placeholder="Category"
+                    />
+                  </div>
+                  <div className="col-span-2">
+                    <label
+                      htmlFor="editLineOrderCost"
+                      className="block text-xs font-medium text-gray-700"
+                    >
+                      Order Cost (per item)
+                    </label>
+                    <input
+                      type="number"
+                      name="orderCost"
+                      id="editLineOrderCost"
+                      value={editLineItem.orderCost}
+                      onChange={handleEditLineItemChange}
+                      min="0"
+                      step="0.01"
+                      className={BLUELINX_COLORS.inputStyle}
+                      placeholder="Cost"
+                    />
+                  </div>
+                  <div className="col-span-2">
+                    <label
+                      htmlFor="editLineAmountReceived"
+                      className="block text-xs font-medium text-gray-700"
+                    >
+                      Amount Received
+                    </label>
+                    <input
+                      type="number"
+                      name="amountReceived"
+                      id="editLineAmountReceived"
+                      value={editLineItem.amountReceived}
+                      onChange={handleEditLineItemChange}
+                      min="0"
+                      className={BLUELINX_COLORS.inputStyle}
+                      placeholder="Received Quantity"
+                    />
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleAddEditLineItem}
+                  className={`${BLUELINX_COLORS.buttonSecondary} text-sm py-1 px-3`}
+                >
+                  Add Line Item
+                </button>
+              </div>
+              <div className="flex justify-end pt-4">
+                <button type="submit" className={BLUELINX_COLORS.buttonPrimary}>
+                  Update PO
+                </button>
+              </div>
+            </form>
+          </Modal>
+        </>
+      )}
+    </div>
+  );
+};
+
+// Equipment Page
+const Equipment = ({ db, userId, showMessage }) => {
+  // Removed isModalOpenProp, prefillDataProp, onCloseModalProp
+  const [equipment, setEquipment] = useState([]);
+  const [isAddEquipmentModalOpen, setIsAddEquipmentModalOpen] = useState(false); // New state for combined modal
+  const [showCsvImport, setShowCsvImport] = useState(false); // State to toggle between manual add and CSV import
+  const [csvFile, setCsvFile] = useState(null);
+  const [currentEquipment, setCurrentEquipment] = useState(null); // For edit mode
+  const [loading, setLoading] = useState(true);
+  const [newEquipmentItem, setNewEquipmentItem] = useState({
+    // State for new manual equipment item
+    name: "",
+    category: "",
+    model: "",
+    manufacture: "",
+    quantity: 0,
+    mfp: "", // Added MFP field
+    imageUrl: "",
+  });
+
+  // Removed sync effects as external props are no longer used for this modal
+  // useEffect(() => {
+  //   if (isModalOpenProp !== undefined) {
+  //     setIsAddEquipmentModalOpen(isModalOpenProp);
+  //   }
+  // }, [isModalOpenProp]);
+
+  // useEffect(() => {
+  //   if (prefillDataProp) {
+  //     setCurrentEquipment(prefillDataProp);
+  //     setShowCsvImport(false); // Always default to manual add if prefilling
+  //   } else {
+  //     setCurrentEquipment(null);
+  //   }
+  // }, [prefillDataProp]);
+
+  // Fetch Equipment
+  useEffect(() => {
+    if (!db || !userId) return;
+    setLoading(true);
+    const equipmentCollectionRef = collection(
+      db,
+      `artifacts/${__app_id}/users/${userId}/equipment`
+    );
+
+    const unsubscribe = onSnapshot(
+      equipmentCollectionRef,
+      (snapshot) => {
+        const equipmentData = snapshot.docs.map((doc) => ({
+          id: doc.id,
+          ...doc.data(),
+        }));
+        setEquipment(equipmentData);
+        setLoading(false);
+      },
+      (error) => {
+        console.error("Error fetching equipment: ", error);
+        showMessage("Error fetching equipment.", "error");
+        setLoading(false);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [db, userId, showMessage]);
+
+  // Handle new equipment item form changes
+  const handleNewEquipmentItemChange = (e) => {
+    const { name, value, type } = e.target;
+    setNewEquipmentItem((prev) => ({
+      ...prev,
+      [name]: type === "number" ? parseInt(value) || 0 : value,
+    }));
+  };
+
+  // Handle adding a new equipment item manually
+  const handleAddEquipmentSubmit = async (e) => {
+    e.preventDefault();
+    if (
+      !newEquipmentItem.name ||
+      !newEquipmentItem.model ||
+      newEquipmentItem.quantity <= 0
+    ) {
+      showMessage(
+        "Please fill in Name, Model, and ensure Quantity is positive.",
+        "error"
+      );
+      return;
+    }
+
+    try {
+      await setDoc(
+        doc(collection(db, `artifacts/${__app_id}/users/${userId}/equipment`)),
+        {
+          ...newEquipmentItem,
+          imageUrl:
+            newEquipmentItem.imageUrl ||
+            "https://placehold.co/100x100/eeeeee/333333?text=No+Image",
+        }
+      );
+      showMessage("Equipment item added successfully!", "success");
+      setIsAddEquipmentModalOpen(false); // Close the combined modal
+      setNewEquipmentItem({
+        // Reset form
+        name: "",
+        category: "",
+        model: "",
+        manufacture: "",
+        quantity: 0,
+        mfp: "",
+        imageUrl: "",
+      });
+      setShowCsvImport(false); // Reset to manual add view
+    } catch (e) {
+      console.error("Error adding equipment item: ", e);
+      showMessage("Failed to add equipment item.", "error");
+    }
+  };
+
+  // Handle Add/Edit Equipment Submit (for existing items)
+  const handleEditEquipmentSubmit = async (e) => {
+    e.preventDefault();
+    const formData = new FormData(e.target);
+    const updatedEquipment = {
+      name: formData.get("name"),
+      category: formData.get("category"),
+      model: formData.get("model"),
+      manufacture: formData.get("manufacture"),
+      quantity: parseInt(formData.get("quantity")) || 0,
+      mfp: formData.get("mfp"), // Get MFP from form
+      imageUrl:
+        formData.get("imageUrl") ||
+        "https://placehold.co/100x100/eeeeee/333333?text=No+Image",
+    };
+
+    if (currentEquipment && currentEquipment.id) {
+      try {
+        await updateDoc(
+          doc(
+            db,
+            `artifacts/${__app_id}/users/${userId}/equipment`,
+            currentEquipment.id
+          ),
+          updatedEquipment
+        );
+        showMessage("Equipment updated successfully!", "success");
+      } catch (e) {
+        console.error("Error updating equipment: ", e);
+        showMessage("Failed to update equipment.", "error");
+      }
+    }
+    setIsAddEquipmentModalOpen(false); // Close the combined modal
+    setCurrentEquipment(null);
+    setShowCsvImport(false); // Reset to manual add view
+  };
+
+  // Handle CSV File Change for Equipment
+  const handleFileChange = (e) => {
+    setCsvFile(e.target.files[0]);
+  };
+
+  // Handle CSV Import for Equipment
+  const handleImportCSV = async () => {
+    if (!csvFile) {
+      showMessage("Please select a CSV file to import.", "error");
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      const text = e.target.result;
+      const parsedData = parseCSV(text);
+
+      if (parsedData.length === 0) {
+        showMessage("CSV file is empty or could not be parsed.", "error");
+        return;
+      }
+
+      const batch = writeBatch(db);
+      const equipmentCollectionRef = collection(
+        db,
+        `artifacts/${__app_id}/users/${userId}/equipment`
+      );
+
+      const processedData = parsedData.map((item) => ({
+        name: item["Name"] || "",
+        category: item["Category"] || "",
+        model: item["Model"] || "",
+        manufacture: item["Manufacture"] || "",
+        quantity: parseInt(item["Quantity"]) || 0, // Added quantity parsing
+        mfp: item["MFP"] || "", // Added MFP from CSV
+        imageUrl:
+          item["Image"] ||
+          "https://placehold.co/100x100/eeeeee/333333?text=No+Image",
+      }));
+
+      for (const item of processedData) {
+        // For simplicity, CSV import will add new unique items or update based on model
+        // A more robust solution might require a unique ID or specific update logic
+        const q = query(
+          equipmentCollectionRef,
+          where("model", "==", item.model)
+        );
+        const querySnapshot = await getDocs(q);
+
+        if (!querySnapshot.empty) {
+          // Update existing equipment
+          const docRef = doc(
+            db,
+            `artifacts/${__app_id}/users/${userId}/equipment`,
+            querySnapshot.docs[0].id
+          );
+          batch.update(docRef, item);
+        } else {
+          // Add new equipment using set with an auto-generated doc reference
+          batch.set(doc(equipmentCollectionRef), item);
+        }
+      }
+
+      try {
+        await batch.commit();
+        showMessage("Equipment imported successfully!", "success");
+        setIsAddEquipmentModalOpen(false); // Close the combined modal
+        setCsvFile(null);
+        setShowCsvImport(false); // Reset to manual add view
+      } catch (e) {
+        console.error("Error importing equipment: ", e);
+        showMessage(
+          "Failed to import equipment. Please check CSV format.",
+          "error"
+        );
+      }
+    };
+    reader.readAsText(csvFile);
+  };
+
+  // Handle Delete Equipment
+  const handleDeleteEquipment = (equipmentToDelete) => {
+    showMessage(
+      `Are you sure you want to delete ${equipmentToDelete.name}?`,
+      "confirm",
+      async () => {
+        try {
+          await deleteDoc(
+            doc(
+              db,
+              `artifacts/${__app_id}/users/${userId}/equipment`,
+              equipmentToDelete.id
+            )
+          );
+          showMessage("Equipment deleted successfully!", "success");
+        } catch (e) {
+          console.error("Error deleting equipment: ", e);
+          showMessage("Failed to delete equipment.", "error");
+        }
+      }
+    );
+  };
+
+  const equipmentColumns = [
+    { key: "name", label: "Name", sortable: true },
+    { key: "category", label: "Category", sortable: true },
+    { key: "model", label: "Model", sortable: true },
+    { key: "manufacture", label: "Manufacture", sortable: true },
+    { key: "quantity", label: "Quantity", sortable: true },
+    { key: "mfp", label: "MFP", sortable: true }, // Display MFP
+    {
+      key: "imageUrl",
+      label: "Image",
+      render: (item) => (
+        <img
+          src={item.imageUrl}
+          alt={item.name}
+          className="w-16 h-16 object-cover rounded-md"
+          onError={(e) =>
+            (e.target.src =
+              "https://placehold.co/100x100/eeeeee/333333?text=No+Image")
+          }
+        />
+      ),
+    },
+  ];
+
+  const equipmentFilterFields = [
+    { key: "category", label: "Category" },
+    { key: "manufacture", label: "Manufacture" },
+    { key: "mfp", label: "MFP" }, // Filter by MFP
+  ];
+
+  const equipmentSearchFields = ["name", "model", "manufacture", "mfp"]; // Search by MFP
+
+  return (
+    <div className="container mx-auto p-4">
+      {loading ? (
+        <LoadingSpinner />
+      ) : (
+        <>
+          <DataTable
+            title="Equipment Management"
+            data={equipment}
+            columns={equipmentColumns}
+            filterFields={equipmentFilterFields}
+            searchFields={equipmentSearchFields}
+            initialSortColumn="name"
+            actions={[
+              {
+                label: "Add Equipment",
+                onClick: () => {
+                  setCurrentEquipment(null);
+                  setIsAddEquipmentModalOpen(true);
+                  setShowCsvImport(false);
+                },
+              }, // Open combined modal, default to manual add
+              {
+                label: "Edit",
+                onClick: (item) => {
+                  setCurrentEquipment(item);
+                  setIsAddEquipmentModalOpen(true);
+                  setShowCsvImport(false);
+                },
+              }, // Open combined modal for edit, default to manual add
+              {
+                label: "Delete",
+                onClick: (item) => handleDeleteEquipment(item),
+                className:
+                  "bg-red-500 hover:bg-red-700 text-white font-bold py-1 px-2 rounded-md text-xs",
+              },
+            ]}
+          />
+
+          {/* Combined Modal for Add/Import Equipment */}
+          <Modal
+            isOpen={isAddEquipmentModalOpen}
+            onClose={() => {
+              setIsAddEquipmentModalOpen(false);
+              setShowCsvImport(false); // Reset to manual add view on close
+              setCsvFile(null); // Clear file
+              setCurrentEquipment(null); // Clear current equipment
+              setNewEquipmentItem({
+                // Reset new equipment form
+                name: "",
+                category: "",
+                model: "",
+                manufacture: "",
+                quantity: 0,
+                mfp: "",
+                imageUrl: "",
+              });
+            }}
+            title={
+              currentEquipment
+                ? "Edit Equipment"
+                : showCsvImport
+                ? "Import Equipment via CSV"
+                : "Add New Equipment"
+            }
+          >
+            <div className="flex justify-center mb-4">
+              <button
+                onClick={() => {
+                  setShowCsvImport(false);
+                }}
+                className={`px-4 py-2 rounded-l-md ${
+                  !showCsvImport
+                    ? BLUELINX_COLORS.buttonPrimary
+                    : BLUELINX_COLORS.buttonSecondary
+                }`}
+              >
+                Add Manually
+              </button>
+              <button
+                onClick={() => {
+                  setShowCsvImport(true);
+                }}
+                className={`px-4 py-2 rounded-r-md ${
+                  showCsvImport
+                    ? BLUELINX_COLORS.buttonPrimary
+                    : BLUELINX_COLORS.buttonSecondary
+                }`}
+              >
+                Import CSV
+              </button>
+            </div>
+
+            {showCsvImport ? (
+              <>
+                <p className="mb-4 text-gray-700">
+                  Upload a CSV file with 'Name', 'Category', 'Model',
+                  'Manufacture', 'Quantity', 'MFP', 'Image' columns.
+                </p>
+                <input
+                  type="file"
+                  accept=".csv"
+                  onChange={handleFileChange}
+                  className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-[#005691] file:text-white hover:file:bg-blue-700"
+                />
+                <div className="mt-4 flex justify-end">
+                  <button
+                    onClick={handleImportCSV}
+                    className={BLUELINX_COLORS.buttonPrimary}
+                    disabled={!csvFile}
+                  >
+                    Upload
+                  </button>
+                </div>
+              </>
+            ) : (
+              // Show Add/Edit form
+              <form
+                onSubmit={
+                  currentEquipment
+                    ? handleEditEquipmentSubmit
+                    : handleAddEquipmentSubmit
+                }
+                className="space-y-4"
+              >
+                <div>
+                  <label
+                    htmlFor="name"
+                    className="block text-sm font-medium text-gray-700"
+                  >
+                    Name
+                  </label>
+                  <input
+                    type="text"
+                    name="name"
+                    id="name"
+                    defaultValue={
+                      currentEquipment?.name || newEquipmentItem.name
+                    }
+                    onChange={handleNewEquipmentItemChange}
+                    className={BLUELINX_COLORS.inputStyle}
+                    required
+                  />
+                </div>
+                <div>
+                  <label
+                    htmlFor="category"
+                    className="block text-sm font-medium text-gray-700"
+                  >
+                    Category
+                  </label>
+                  <input
+                    type="text"
+                    name="category"
+                    id="category"
+                    defaultValue={
+                      currentEquipment?.category || newEquipmentItem.category
+                    }
+                    onChange={handleNewEquipmentItemChange}
+                    className={BLUELINX_COLORS.inputStyle}
+                    required
+                  />
+                </div>
+                <div>
+                  <label
+                    htmlFor="model"
+                    className="block text-sm font-medium text-gray-700"
+                  >
+                    Model
+                  </label>
+                  <input
+                    type="text"
+                    name="model"
+                    id="model"
+                    defaultValue={
+                      currentEquipment?.model || newEquipmentItem.model
+                    }
+                    onChange={handleNewEquipmentItemChange}
+                    className={BLUELINX_COLORS.inputStyle}
+                    required
+                  />
+                </div>
+                <div>
+                  <label
+                    htmlFor="manufacture"
+                    className="block text-sm font-medium text-gray-700"
+                  >
+                    Manufacture
+                  </label>
+                  <input
+                    type="text"
+                    name="manufacture"
+                    id="manufacture"
+                    defaultValue={
+                      currentEquipment?.manufacture ||
+                      newEquipmentItem.manufacture
+                    }
+                    onChange={handleNewEquipmentItemChange}
+                    className={BLUELINX_COLORS.inputStyle}
+                    required
+                  />
+                </div>
+                <div>
+                  <label
+                    htmlFor="quantity"
+                    className="block text-sm font-medium text-gray-700"
+                  >
+                    Quantity
+                  </label>
+                  <input
+                    type="number"
+                    name="quantity"
+                    id="quantity"
+                    defaultValue={
+                      currentEquipment?.quantity || newEquipmentItem.quantity
+                    }
+                    min="0"
+                    className={BLUELINX_COLORS.inputStyle}
+                    required
+                  />
+                </div>
+                <div>
+                  <label
+                    htmlFor="mfp"
+                    className="block text-sm font-medium text-gray-700"
+                  >
+                    MFP
+                  </label>
+                  <input
+                    type="text"
+                    name="mfp"
+                    id="mfp"
+                    defaultValue={currentEquipment?.mfp || newEquipmentItem.mfp}
+                    onChange={handleNewEquipmentItemChange}
+                    className={BLUELINX_COLORS.inputStyle}
+                  />
+                </div>
+                <div>
+                  <label
+                    htmlFor="imageUrl"
+                    className="block text-sm font-medium text-gray-700"
+                  >
+                    Image URL
+                  </label>
+                  <input
+                    type="url"
+                    name="imageUrl"
+                    id="imageUrl"
+                    defaultValue={
+                      currentEquipment?.imageUrl || newEquipmentItem.imageUrl
+                    }
+                    onChange={handleNewEquipmentItemChange}
+                    className={BLUELINX_COLORS.inputStyle}
+                    placeholder="e.g., https://example.com/image.jpg"
+                  />
+                </div>
+                <div className="flex justify-end pt-4">
+                  <button
+                    type="submit"
+                    className={BLUELINX_COLORS.buttonPrimary}
+                  >
+                    {currentEquipment ? "Update Equipment" : "Add Equipment"}
+                  </button>
+                </div>
+              </form>
+            )}
+          </Modal>
+        </>
+      )}
+    </div>
+  );
+};
+
+// Moves Page
+const Moves = ({ db, userId, showMessage }) => {
+  const [moves, setMoves] = useState([]);
+  const [inventory, setInventory] = useState([]);
+  const [warehouses, setWarehouses] = useState([]);
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [newMove, setNewMove] = useState({
+    itemModelNumber: "",
+    quantity: 0,
+    sourceBranchId: "",
+    destinationBranchId: "",
+    status: "pending",
+  });
+  const [loading, setLoading] = useState(true);
+
+  // Fetch Moves, Inventory, and Warehouses
+  useEffect(() => {
+    if (!db || !userId) return;
+    setLoading(true);
+    const movesCollectionRef = collection(
+      db,
+      `artifacts/${__app_id}/users/${userId}/moves`
+    );
+    const inventoryCollectionRef = collection(
+      db,
+      `artifacts/${__app_id}/users/${userId}/inventory`
+    );
+    const warehousesCollectionRef = collection(
+      db,
+      `artifacts/${__app_id}/users/${userId}/warehouses`
+    );
+
+    const unsubscribeMoves = onSnapshot(
+      movesCollectionRef,
+      (snapshot) => {
+        const movesData = snapshot.docs.map((doc) => ({
+          id: doc.id,
+          ...doc.data(),
+        }));
+        setMoves(movesData);
+        setLoading(false);
+      },
+      (error) => {
+        console.error("Error fetching moves: ", error);
+        showMessage("Error fetching moves.", "error");
+        setLoading(false);
+      }
+    );
+
+    const unsubscribeInventory = onSnapshot(
+      inventoryCollectionRef,
+      (snapshot) => {
+        setInventory(
+          snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
+        );
+      },
+      (error) => {
+        console.error("Error fetching inventory for moves: ", error);
+      }
+    );
+
+    const unsubscribeWarehouses = onSnapshot(
+      warehousesCollectionRef,
+      (snapshot) => {
+        setWarehouses(
+          snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
+        );
+      },
+      (error) => {
+        console.error("Error fetching warehouses for moves: ", error);
+      }
+    );
+
+    return () => {
+      unsubscribeMoves();
+      unsubscribeInventory();
+      unsubscribeWarehouses();
+    };
+  }, [db, userId, showMessage]);
+
+  const warehouseMap = useMemo(() => {
+    return warehouses.reduce((map, wh) => ({ ...map, [wh.id]: wh.name }), {});
+  }, [warehouses]);
+
+  const inventoryMap = useMemo(() => {
+    return inventory.reduce(
+      (map, item) => ({ ...map, [item.modelNumber]: item }),
+      {}
+    );
+  }, [inventory]);
+
+  // Handle New Move Input Change
+  const handleNewMoveChange = (e) => {
+    const { name, value } = e.target;
+    setNewMove((prev) => ({ ...prev, [name]: value }));
+  };
+
+  // Handle Initiating a New Move
+  const handleInitiateMove = async (e) => {
+    e.preventDefault();
+    const { itemModelNumber, quantity, sourceBranchId, destinationBranchId } =
+      newMove;
+    const qty = parseInt(quantity);
+
+    if (
+      !itemModelNumber ||
+      qty <= 0 ||
+      !sourceBranchId ||
+      !destinationBranchId ||
+      sourceBranchId === destinationBranchId
+    ) {
+      showMessage(
+        "Please fill all fields correctly, quantity must be positive, and source/destination must be different.",
+        "error"
+      );
+      return;
+    }
+
+    const itemInSource = inventory.find(
+      (item) =>
+        item.modelNumber === itemModelNumber &&
+        item.assignedBranchId === sourceBranchId
+    );
+    if (!itemInSource || itemInSource.amountInInventory < qty) {
+      showMessage(
+        `Not enough quantity of ${itemModelNumber} in source branch (${
+          warehouseMap[sourceBranchId] || sourceBranchId
+        }). Available: ${itemInSource?.amountInInventory || 0}`,
+        "error"
+      );
+      return;
+    }
+
+    const batch = writeBatch(db);
+    const movesCollectionRef = collection(
+      db,
+      `artifacts/${__app_id}/users/${userId}/moves`
+    );
+    const inventoryCollectionRef = collection(
+      db,
+      `artifacts/${__app_id}/users/${userId}/inventory`
+    );
+
+    // 1. Decrease inventory at source branch
+    const sourceInventoryDocRef = doc(
+      db,
+      `artifacts/${__app_id}/users/${userId}/inventory`,
+      itemInSource.id
+    );
+    batch.update(sourceInventoryDocRef, {
+      amountInInventory: itemInSource.amountInInventory - qty,
+    });
+
+    // 2. Add the move record using set with an auto-generated doc reference
+    batch.set(doc(movesCollectionRef), {
+      moveId: `MOVE-${Date.now().toString().slice(-6)}`,
+      itemModelNumber,
+      quantity: qty,
+      sourceBranchId,
+      destinationBranchId,
+      dateInitiated: new Date().toISOString(),
+      status: "pending",
+    });
+
+    try {
+      await batch.commit();
+      showMessage("Move initiated successfully!", "success");
+      setIsModalOpen(false);
+      setNewMove({
+        itemModelNumber: "",
+        quantity: 0,
+        sourceBranchId: "",
+        destinationBranchId: "",
+        status: "pending",
+      });
+    } catch (e) {
+      console.error("Error initiating move: ", e);
+      showMessage("Failed to initiate move.", "error");
+    }
+  };
+
+  // Handle Update Move Status
+  const handleUpdateMoveStatus = (move, newStatus) => {
+    let confirmationMessage = "";
+    if (newStatus === "completed") {
+      confirmationMessage = `Are you sure you want to mark move ${move.moveId} as COMPLETE? This will add items to the destination inventory.`;
+    } else if (newStatus === "in-transit") {
+      confirmationMessage = `Are you sure you want to mark move ${move.moveId} as IN TRANSIT?`;
+    } else {
+      confirmationMessage = `Are you sure you want to update status of move ${move.moveId} to ${newStatus}?`;
+    }
+
+    showMessage(confirmationMessage, "confirm", async () => {
+      const batch = writeBatch(db);
+      const moveDocRef = doc(
+        db,
+        `artifacts/${__app_id}/users/${userId}/moves`,
+        move.id
+      );
+      const inventoryCollectionRef = collection(
+        db,
+        `artifacts/${__app_id}/users/${userId}/inventory`
+      );
+
+      batch.update(moveDocRef, {
+        status: newStatus,
+        dateCompleted:
+          newStatus === "completed"
+            ? new Date().toISOString()
+            : move.dateCompleted,
+      });
+
+      // If status becomes 'completed', add items to destination branch inventory
+      if (newStatus === "completed") {
+        const itemModelNumber = move.itemModelNumber;
+        const destinationBranchId = move.destinationBranchId;
+        const quantity = move.quantity;
+
+        // Try to find the item in the destination branch
+        const q = query(
+          inventoryCollectionRef,
+          where("modelNumber", "==", itemModelNumber),
+          where("assignedBranchId", "==", destinationBranchId)
+        );
+        const querySnapshot = await getDocs(q);
+
+        if (!querySnapshot.empty) {
+          // Item exists in destination branch, update quantity
+          const existingInventoryDoc = querySnapshot.docs[0];
+          const newAmount =
+            (existingInventoryDoc.data().amountInInventory || 0) + quantity;
+          batch.update(
+            doc(
+              db,
+              `artifacts/${__app_id}/users/${userId}/inventory`,
+              existingInventoryDoc.id
+            ),
+            {
+              amountInInventory: newAmount,
+            }
+          );
+        } else {
+          // Item does not exist in destination branch, create a new entry
+          const newInventoryDocRef = doc(inventoryCollectionRef); // Get a new document reference with an auto-generated ID
+          batch.set(newInventoryDocRef, {
+            modelNumber: itemModelNumber,
+            category: inventoryMap[itemModelNumber]?.category || "Unknown",
+            amountInInventory: quantity,
+            numOnOrder: 0,
+            manufactureName:
+              inventoryMap[itemModelNumber]?.manufactureName || "",
+            imageUrl:
+              inventoryMap[itemModelNumber]?.imageUrl ||
+              "https://placehold.co/100x100/eeeeee/333333?text=No+Image",
+            assignedBranchId: destinationBranchId,
+          });
+        }
+      }
+
+      try {
+        await batch.commit();
+        showMessage(
+          `Move ${move.moveId} status updated to ${newStatus}!`,
+          "success"
+        );
+      } catch (e) {
+        console.error("Error updating move status: ", e);
+        showMessage("Failed to update move status.", "error");
+      }
+    });
+  };
+
+  const movesColumns = [
+    { key: "moveId", label: "Move ID", sortable: true },
+    { key: "itemModelNumber", label: "Item Model", sortable: true },
+    { key: "quantity", label: "Quantity", sortable: true },
+    {
+      key: "sourceBranchId",
+      label: "Source Branch",
+      sortable: true,
+      render: (move) =>
+        warehouseMap[move.sourceBranchId] || move.sourceBranchId || "N/A",
+    },
+    {
+      key: "destinationBranchId",
+      label: "Destination Branch",
+      sortable: true,
+      render: (move) =>
+        warehouseMap[move.destinationBranchId] ||
+        move.destinationBranchId ||
+        "N/A",
+    },
+    {
+      key: "dateInitiated",
+      label: "Date Initiated",
+      sortable: true,
+      render: (move) => new Date(move.dateInitiated).toLocaleDateString(),
+    },
+    {
+      key: "status",
+      label: "Status",
+      sortable: true,
+      render: (move) => (
+        <span
+          className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full
+        ${move.status === "pending" ? BLUELINX_COLORS.pendingOrange : ""}
+        ${move.status === "in-transit" ? "bg-blue-200 text-blue-800" : ""}
+        ${move.status === "completed" ? BLUELINX_COLORS.successGreen : ""}
+      `}
+        >
+          {move.status}
+        </span>
+      ),
+    },
+  ];
+
+  const movesFilterFields = [
+    { key: "status", label: "Status" },
+    { key: "sourceBranchId", label: "Source Branch" },
+    { key: "destinationBranchId", label: "Destination Branch" },
+  ];
+
+  const movesSearchFields = ["moveId", "itemModelNumber"];
+
+  return (
+    <div className="container mx-auto p-4">
+      {loading ? (
+        <LoadingSpinner />
+      ) : (
+        <>
+          <DataTable
+            title="Inventory Moves"
+            data={moves}
+            columns={movesColumns}
+            filterFields={movesFilterFields}
+            searchFields={movesSearchFields}
+            initialSortColumn="dateInitiated"
+            initialSortDirection="desc"
+            actions={[
+              {
+                label: "Initiate New Move",
+                onClick: () => setIsModalOpen(true),
+              },
+              {
+                label: "Mark In-Transit",
+                onClick: (move) => handleUpdateMoveStatus(move, "in-transit"),
+                render: (move) =>
+                  move.status === "pending" ? ( // Changed to ternary operator
+                    <button
+                      key={`mark-in-transit-${move.id}`} // Unique key
+                      onClick={() => handleUpdateMoveStatus(move, "in-transit")}
+                      className={`${BLUELINX_COLORS.buttonSecondary} text-xs py-1 px-2`}
+                    >
+                      Mark In-Transit
+                    </button>
+                  ) : null,
+              },
+              {
+                label: "Mark Completed",
+                onClick: (move) => handleUpdateMoveStatus(move, "completed"),
+                render: (move) =>
+                  move.status === "pending" || move.status === "in-transit" ? ( // Changed to ternary operator
+                    <button
+                      key={`mark-completed-${move.id}`} // Unique key
+                      onClick={() => handleUpdateMoveStatus(move, "completed")}
+                      className={`${BLUELINX_COLORS.buttonPrimary} text-xs py-1 px-2`}
+                    >
+                      Mark Completed
+                    </button>
+                  ) : null,
+              },
+            ]}
+          />
+
+          <Modal
+            isOpen={isModalOpen}
+            onClose={() => setIsModalOpen(false)}
+            title="Initiate New Inventory Move"
+          >
+            <form onSubmit={handleInitiateMove} className="space-y-4">
+              <div>
+                <label
+                  htmlFor="itemModelNumber"
+                  className="block text-sm font-medium text-gray-700"
+                >
+                  Item Model Number
+                </label>
+                <select
+                  name="itemModelNumber"
+                  id="itemModelNumber"
+                  value={newMove.itemModelNumber}
+                  onChange={handleNewMoveChange}
+                  className={BLUELINX_COLORS.inputStyle}
+                  required
+                >
+                  <option value="">Select an Item</option>
+                  {inventory.map((item) => (
+                    <option key={item.id} value={item.modelNumber}>
+                      {item.modelNumber} ({item.amountInInventory} in stock)
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label
+                  htmlFor="quantity"
+                  className="block text-sm font-medium text-gray-700"
+                >
+                  Quantity
+                </label>
+                <input
+                  type="number"
+                  name="quantity"
+                  id="quantity"
+                  min="1"
+                  value={newMove.quantity}
+                  onChange={handleNewMoveChange}
+                  className={BLUELINX_COLORS.inputStyle}
+                  required
+                />
+              </div>
+              <div>
+                <label
+                  htmlFor="sourceBranchId"
+                  className="block text-sm font-medium text-gray-700"
+                >
+                  Source Branch
+                </label>
+                <select
+                  name="sourceBranchId"
+                  id="sourceBranchId"
+                  value={newMove.sourceBranchId}
+                  onChange={handleNewMoveChange}
+                  className={BLUELINX_COLORS.inputStyle}
+                  required
+                >
+                  <option value="">Select Source Branch</option>
+                  {warehouses.map((wh) => (
+                    <option key={wh.id} value={wh.id}>
+                      {wh.name} ({wh.shortCode})
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label
+                  htmlFor="destinationBranchId"
+                  className="block text-sm font-medium text-gray-700"
+                >
+                  Destination Branch
+                </label>
+                <select
+                  name="destinationBranchId"
+                  id="destinationBranchId"
+                  value={newMove.destinationBranchId}
+                  onChange={handleNewMoveChange}
+                  className={BLUELINX_COLORS.inputStyle}
+                  required
+                >
+                  <option value="">Select Destination Branch</option>
+                  {warehouses.map((wh) => (
+                    <option key={wh.id} value={wh.id}>
+                      {wh.name} ({wh.shortCode})
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex justify-end pt-4">
+                <button type="submit" className={BLUELINX_COLORS.buttonPrimary}>
+                  Initiate Move
+                </button>
+              </div>
+            </form>
+          </Modal>
+        </>
+      )}
+    </div>
+  );
+};
+
+// Warehouses Page
+const Warehouses = ({ db, userId, showMessage }) => {
+  const [warehouses, setWarehouses] = useState([]);
+  const [isAddWarehouseModalOpen, setIsAddWarehouseModalOpen] = useState(false); // New state for add/import modal
+  const [showCsvImport, setShowCsvImport] = useState(false); // State to toggle between manual add and CSV import
+  const [csvFile, setCsvFile] = useState(null);
+  const [currentWarehouse, setCurrentWarehouse] = useState(null); // For edit mode
+  const [loading, setLoading] = useState(true);
+  const [newWarehouseItem, setNewWarehouseItem] = useState({
+    // State for new manual warehouse item
+    shortCode: "",
+    name: "",
+    streetAddress: "",
+    city: "",
+    state: "",
+    facilityCode: "", // Added facilityCode field
+  });
+
+  // Fetch Warehouses
+  useEffect(() => {
+    if (!db || !userId) return;
+    setLoading(true);
+    const warehousesCollectionRef = collection(
+      db,
+      `artifacts/${__app_id}/users/${userId}/warehouses`
+    );
+
+    const unsubscribe = onSnapshot(
+      warehousesCollectionRef,
+      (snapshot) => {
+        const warehousesData = snapshot.docs.map((doc) => ({
+          id: doc.id,
+          ...doc.data(),
+        }));
+        setWarehouses(warehousesData);
+        setLoading(false);
+      },
+      (error) => {
+        console.error("Error fetching warehouses: ", error);
+        showMessage("Error fetching warehouses.", "error");
+        setLoading(false);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [db, userId, showMessage]);
+
+  // Handle new warehouse item form changes
+  const handleNewWarehouseItemChange = (e) => {
+    const { name, value } = e.target;
+    setNewWarehouseItem((prev) => ({
+      ...prev,
+      [name]: value,
+    }));
+  };
+
+  // Handle adding a new warehouse manually
+  const handleAddWarehouseSubmit = async (e) => {
+    e.preventDefault();
+    if (
+      !newWarehouseItem.shortCode ||
+      !newWarehouseItem.name ||
+      !newWarehouseItem.city ||
+      !newWarehouseItem.state
+    ) {
+      showMessage("Please fill in Short Code, Name, City, and State.", "error");
+      return;
+    }
+
+    try {
+      // Use doc(collectionRef) to get a new document reference with an auto-generated ID
+      await setDoc(
+        doc(collection(db, `artifacts/${__app_id}/users/${userId}/warehouses`)),
+        newWarehouseItem
+      );
+      showMessage("Warehouse added successfully!", "success");
+      setIsAddWarehouseModalOpen(false);
+      setNewWarehouseItem({
+        // Reset form
+        shortCode: "",
+        name: "",
+        streetAddress: "",
+        city: "",
+        state: "",
+        facilityCode: "",
+      });
+    } catch (e) {
+      console.error("Error adding warehouse: ", e);
+      showMessage("Failed to add warehouse.", "error");
+    }
+  };
+
+  // Handle CSV File Change for Warehouses
+  const handleFileChange = (e) => {
+    setCsvFile(e.target.files[0]);
+  };
+
+  // Handle CSV Import for Warehouses
+  const handleImportCSV = async () => {
+    if (!csvFile) {
+      showMessage("Please select a CSV file to import.", "error");
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      const text = e.target.result;
+      const parsedData = parseCSV(text);
+
+      if (parsedData.length === 0) {
+        showMessage("CSV file is empty or could not be parsed.", "error");
+        return;
+      }
+
+      const batch = writeBatch(db);
+      const warehousesCollectionRef = collection(
+        db,
+        `artifacts/${__app_id}/users/${userId}/warehouses`
+      );
+
+      const processedData = parsedData.map((item) => ({
+        shortCode: item["Short Code"] || "",
+        name: item["Name"] || "",
+        streetAddress: item["Street Address"] || "",
+        city: item["City"] || "",
+        state: item["State"] || "",
+        facilityCode: item["Facility Code"] || "", // Added facilityCode from CSV
+      }));
+
+      for (const item of processedData) {
+        // For simplicity, CSV import will add new unique items or update based on shortCode
+        const q = query(
+          warehousesCollectionRef,
+          where("shortCode", "==", item.shortCode)
+        );
+        const querySnapshot = await getDocs(q);
+
+        if (!querySnapshot.empty) {
+          // Update existing warehouse
+          const docRef = doc(
+            db,
+            `artifacts/${__app_id}/users/${userId}/warehouses`,
+            querySnapshot.docs[0].id
+          );
+          batch.update(docRef, item);
+        } else {
+          // Add new warehouse using set with an auto-generated doc reference
+          batch.set(doc(warehousesCollectionRef), item);
+        }
+      }
+
+      try {
+        await batch.commit();
+        showMessage("Warehouses imported successfully!", "success");
+        setIsAddWarehouseModalOpen(false); // Close the combined modal
+        setCsvFile(null);
+        setShowCsvImport(false); // Reset to manual add view
+      } catch (e) {
+        console.error("Error importing warehouses: ", e);
+        showMessage(
+          "Failed to import warehouses. Please check CSV format.",
+          "error"
+        );
+      }
+    };
+    reader.readAsText(csvFile);
+  };
+
+  // Handle Delete Warehouse
+  const handleDeleteWarehouse = (warehouseToDelete) => {
+    showMessage(
+      `Are you sure you want to delete ${warehouseToDelete.name}?`,
+      "confirm",
+      async () => {
+        try {
+          await deleteDoc(
+            doc(
+              db,
+              `artifacts/${__app_id}/users/${userId}/warehouses`,
+              warehouseToDelete.id
+            )
+          );
+          showMessage("Warehouse deleted successfully!", "success");
+        } catch (e) {
+          console.error("Error deleting warehouse: ", e);
+          showMessage("Failed to delete warehouse.", "error");
+        }
+      }
+    );
+  };
+
+  const warehouseColumns = [
+    { key: "shortCode", label: "Short Code", sortable: true },
+    { key: "facilityCode", label: "Facility Code", sortable: true }, // Display facilityCode
+    { key: "name", label: "Name", sortable: true },
+    { key: "streetAddress", label: "Street Address", sortable: true },
+    { key: "city", label: "City", sortable: true },
+    { key: "state", label: "State", sortable: true },
+    // List of Items assigned to that branch - This would require fetching all inventory and filtering by branchId
+    // For simplicity, we'll just display the branch info here. A dedicated filter on the Inventory page can show assigned items.
+  ];
+
+  const warehouseFilterFields = [
+    { key: "city", label: "City" },
+    { key: "state", label: "State" },
+    { key: "facilityCode", label: "Facility Code" }, // Filter by facilityCode
+  ];
+
+  const warehouseSearchFields = [
+    "shortCode",
+    "name",
+    "city",
+    "state",
+    "streetAddress",
+    "facilityCode",
+  ]; // Search by facilityCode
+
+  return (
+    <div className="container mx-auto p-4">
+      {loading ? (
+        <LoadingSpinner />
+      ) : (
+        <>
+          <DataTable
+            title="Warehouse Locations"
+            data={warehouses}
+            columns={warehouseColumns}
+            filterFields={warehouseFilterFields}
+            searchFields={warehouseSearchFields}
+            initialSortColumn="name"
+            actions={[
+              {
+                label: "Add Warehouse",
+                onClick: () => {
+                  setCurrentWarehouse(null);
+                  setIsAddWarehouseModalOpen(true);
+                  setShowCsvImport(false);
+                },
+              }, // Open the new combined modal
+              {
+                label: "Edit",
+                onClick: (item) => {
+                  setCurrentWarehouse(item);
+                  setIsAddWarehouseModalOpen(true);
+                  setShowCsvImport(false);
+                },
+              }, // Use new combined modal for edit
+              {
+                label: "Delete",
+                onClick: (item) => handleDeleteWarehouse(item),
+                className:
+                  "bg-red-500 hover:bg-red-700 text-white font-bold py-1 px-2 rounded-md text-xs",
+              },
+            ]}
+          />
+
+          {/* Combined Modal for Add/Import Warehouses */}
+          <Modal
+            isOpen={isAddWarehouseModalOpen}
+            onClose={() => {
+              setIsAddWarehouseModalOpen(false);
+              setShowCsvImport(false); // Reset to manual add view on close
+              setCsvFile(null); // Clear file
+              setCurrentWarehouse(null); // Clear current warehouse for edit
+              setNewWarehouseItem({
+                // Reset new warehouse form
+                shortCode: "",
+                name: "",
+                streetAddress: "",
+                city: "",
+                state: "",
+                facilityCode: "",
+              });
+            }}
+            title={
+              currentWarehouse
+                ? "Edit Warehouse"
+                : showCsvImport
+                ? "Import Warehouses via CSV"
+                : "Add New Warehouse"
+            }
+          >
+            <div className="flex justify-center mb-4">
+              <button
+                onClick={() => {
+                  setShowCsvImport(false);
+                  setCurrentWarehouse(null);
+                }} // Reset currentWarehouse when switching to manual add
+                className={`px-4 py-2 rounded-l-md ${
+                  !showCsvImport
+                    ? BLUELINX_COLORS.buttonPrimary
+                    : BLUELINX_COLORS.buttonSecondary
+                }`}
+              >
+                Add Manually
+              </button>
+              <button
+                onClick={() => {
+                  setShowCsvImport(true);
+                  setCurrentWarehouse(null);
+                }} // Reset currentWarehouse when switching to CSV import
+                className={`px-4 py-2 rounded-r-md ${
+                  showCsvImport
+                    ? BLUELINX_COLORS.buttonPrimary
+                    : BLUELINX_COLORS.buttonSecondary
+                }`}
+              >
+                Import CSV
+              </button>
+            </div>
+
+            {showCsvImport ? (
+              <>
+                <p className="mb-4 text-gray-700">
+                  Upload a CSV file with 'Short Code', 'Name', 'Street Address',
+                  'City', 'State', 'Facility Code' columns.
+                </p>
+                <input
+                  type="file"
+                  accept=".csv"
+                  onChange={handleFileChange}
+                  className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-[#005691] file:text-white hover:file:bg-blue-700"
+                />
+                <div className="mt-4 flex justify-end">
+                  <button
+                    onClick={handleImportCSV}
+                    className={BLUELINX_COLORS.buttonPrimary}
+                    disabled={!csvFile}
+                  >
+                    Upload
+                  </button>
+                </div>
+              </>
+            ) : (
+              // Show Add/Edit form
+              <form
+                onSubmit={
+                  currentWarehouse
+                    ? handleWarehouseSubmit
+                    : handleAddWarehouseSubmit
+                }
+                className="space-y-4"
+              >
+                <div>
+                  <label
+                    htmlFor="shortCode"
+                    className="block text-sm font-medium text-gray-700"
+                  >
+                    Short Code
+                  </label>
+                  <input
+                    type="text"
+                    name="shortCode"
+                    id="shortCode"
+                    defaultValue={
+                      currentWarehouse?.shortCode || newWarehouseItem.shortCode
+                    }
+                    onChange={handleNewWarehouseItemChange}
+                    className={BLUELINX_COLORS.inputStyle}
+                    required
+                  />
+                </div>
+                <div>
+                  <label
+                    htmlFor="facilityCode"
+                    className="block text-sm font-medium text-gray-700"
+                  >
+                    Facility Code
+                  </label>
+                  <input
+                    type="text"
+                    name="facilityCode"
+                    id="facilityCode"
+                    defaultValue={
+                      currentWarehouse?.facilityCode ||
+                      newWarehouseItem.facilityCode
+                    }
+                    onChange={handleNewWarehouseItemChange}
+                    className={BLUELINX_COLORS.inputStyle}
+                  />
+                </div>
+                <div>
+                  <label
+                    htmlFor="name"
+                    className="block text-sm font-medium text-gray-700"
+                  >
+                    Name
+                  </label>
+                  <input
+                    type="text"
+                    name="name"
+                    id="name"
+                    defaultValue={
+                      currentWarehouse?.name || newWarehouseItem.name
+                    }
+                    onChange={handleNewWarehouseItemChange}
+                    className={BLUELINX_COLORS.inputStyle}
+                    required
+                  />
+                </div>
+                <div>
+                  <label
+                    htmlFor="streetAddress"
+                    className="block text-sm font-medium text-gray-700"
+                  >
+                    Street Address
+                  </label>
+                  <input
+                    type="text"
+                    name="streetAddress"
+                    id="streetAddress"
+                    defaultValue={
+                      currentWarehouse?.streetAddress ||
+                      newWarehouseItem.streetAddress
+                    }
+                    onChange={handleNewWarehouseItemChange}
+                    className={BLUELINX_COLORS.inputStyle}
+                    required
+                  />
+                </div>
+                <div>
+                  <label
+                    htmlFor="city"
+                    className="block text-sm font-medium text-gray-700"
+                  >
+                    City
+                  </label>
+                  <input
+                    type="text"
+                    name="city"
+                    id="city"
+                    defaultValue={
+                      currentWarehouse?.city || newWarehouseItem.city
+                    }
+                    onChange={handleNewWarehouseItemChange}
+                    className={BLUELINX_COLORS.inputStyle}
+                    required
+                  />
+                </div>
+                <div>
+                  <label
+                    htmlFor="state"
+                    className="block text-sm font-medium text-gray-700"
+                  >
+                    State
+                  </label>
+                  <input
+                    type="text"
+                    name="state"
+                    id="state"
+                    defaultValue={
+                      currentWarehouse?.state || newWarehouseItem.state
+                    }
+                    onChange={handleNewWarehouseItemChange}
+                    className={BLUELINX_COLORS.inputStyle}
+                    required
+                  />
+                </div>
+                <div className="flex justify-end pt-4">
+                  <button
+                    type="submit"
+                    className={BLUELINX_COLORS.buttonPrimary}
+                  >
+                    {currentWarehouse ? "Update Warehouse" : "Add Warehouse"}
+                  </button>
+                </div>
+              </form>
+            )}
+          </Modal>
+        </>
+      )}
+    </div>
+  );
+};
+
+// Main App Component
+const App = () => {
+  const [db, setDb] = useState(null);
+  const [auth, setAuth] = useState(null);
+  const [userId, setUserId] = useState(null);
+  const [loadingFirebase, setLoadingFirebase] = useState(true);
+  const [currentPage, setCurrentPage] = useState("Inventory");
+
+  // Removed states for cross-component Equipment modal control as the Equipment page is removed
+  // const [isEquipmentModalOpenFromPO, setIsEquipmentModalOpenFromPO] = useState(false);
+  // const [prefillEquipmentData, setPrefillEquipmentData] = useState(null);
+
+  // Removed callbacks for opening/closing Equipment modal as the Equipment page is removed
+  // const openEquipmentModalForPOItem = useCallback((data) => {
+  //   setPrefillEquipmentData(data);
+  //   setIsEquipmentModalOpenFromPO(true);
+  // }, []);
+
+  // const closeEquipmentModalForPOItem = useCallback(() => {
+  //   setIsEquipmentModalOpenFromPO(false);
+  //   setPrefillEquipmentData(null);
+  // }, []);
+
+  // Create a ref for the MessageBox
+  const messageBoxRef = React.useRef(null);
+
+  // Callback to show custom message box
+  const showMessage = useCallback(
+    (msg, type = "info", onConfirm = null, onCancel = null) => {
+      if (messageBoxRef.current) {
+        messageBoxRef.current.open(msg, type, onConfirm, onCancel);
+      }
+    },
+    []
+  );
+
+  // Initialize Firebase and handle authentication
+  useEffect(() => {
+    const initializeAuth = async () => {
+      try {
+        // Accessing global variables directly as they are provided by the environment
+        const appId = __app_id;
+        const firebaseConfig = JSON.parse(__firebase_config);
+        const initialAuthToken = __initial_auth_token;
+
+        const app = initializeApp(firebaseConfig);
+        const firestoreDb = getFirestore(app);
+        const firebaseAuth = getAuth(app);
+
+        setDb(firestoreDb);
+        setAuth(firebaseAuth);
+
+        // Attempt custom token sign-in first if available
+        if (initialAuthToken) {
+          try {
+            await signInWithCustomToken(firebaseAuth, initialAuthToken);
+            console.log("Signed in with custom token.");
+          } catch (customTokenError) {
+            console.warn(
+              "Custom token sign-in failed, attempting anonymous sign-in:",
+              customTokenError
+            );
+            // Fallback to anonymous sign-in if custom token fails
+            try {
+              await signInAnonymously(firebaseAuth);
+              console.log("Signed in anonymously after custom token failure.");
+            } catch (anonymousError) {
+              console.error("Anonymous sign-in failed:", anonymousError);
+              showMessage(
+                `Authentication failed: ${anonymousError.message}`,
+                "error"
+              );
+            }
+          }
+        } else {
+          // If no custom token, proceed directly with anonymous sign-in
+          try {
+            await signInAnonymously(firebaseAuth);
+            console.log("Signed in anonymously (no custom token provided).");
+          } catch (anonymousError) {
+            console.error("Anonymous sign-in failed:", anonymousError);
+            showMessage(
+              `Authentication failed: ${anonymousError.message}`,
+              "error"
+            );
+          }
+        }
+
+        // Listen for auth state changes to set userId and loading state
+        const unsubscribeAuth = onAuthStateChanged(firebaseAuth, (user) => {
+          if (user) {
+            setUserId(user.uid);
+          } else {
+            setUserId(null); // User is not authenticated
+          }
+          setLoadingFirebase(false); // Authentication attempt completed
+        });
+
+        return () => unsubscribeAuth(); // Cleanup listener
+      } catch (e) {
+        console.error("Failed to initialize Firebase:", e);
+        showMessage(
+          "Failed to initialize Firebase. Please ensure the environment is set up correctly.",
+          "error"
+        );
+        setLoadingFirebase(false);
+      }
+    };
+    initializeAuth(); // Call the async function
+  }, [showMessage]);
+
+  const renderPage = () => {
+    if (loadingFirebase || !db || !userId) {
+      return <LoadingSpinner />;
+    }
+
+    switch (currentPage) {
+      case "Inventory":
+        return <Inventory db={db} userId={userId} showMessage={showMessage} />;
+      case "Purchase Orders":
+        // Removed openEquipmentModalForPOItem prop as Equipment page is removed
+        return (
+          <PurchaseOrders db={db} userId={userId} showMessage={showMessage} />
+        );
+      case "Purchase Order History":
+        return <POHistory db={db} userId={userId} showMessage={showMessage} />;
+      // Re-added Equipment case
+      case "Equipment":
+        return <Equipment db={db} userId={userId} showMessage={showMessage} />;
+      case "Moves":
+        return <Moves db={db} userId={userId} showMessage={showMessage} />;
+      case "Warehouses":
+        return <Warehouses db={db} userId={userId} showMessage={showMessage} />;
+      default:
+        return <Inventory db={db} userId={userId} showMessage={showMessage} />;
+    }
+  };
+
+  return (
+    <div
+      className={`min-h-screen flex flex-col ${BLUELINX_COLORS.lightGreyBg} font-inter`}
+    >
+      {/* Tailwind CSS Script - Always include this for Tailwind to work */}
+      <script src="https://cdn.tailwindcss.com"></script>
+      {/* Add Font (Inter) */}
+      <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap"
+        rel="stylesheet"
+      />
+      <style>
+        {`
+        body {
+          font-family: 'Inter', sans-serif;
+        }
+        `}
+      </style>
+
+      {/* Navigation Bar */}
+      <nav className={`${BLUELINX_COLORS.primaryBlue} p-4 shadow-lg`}>
+        <div className="container mx-auto flex flex-wrap items-center justify-between">
+          <div className="flex items-center space-x-4">
+            {/* Bluelinxco Logo Placeholder */}
+            <h1 className="text-white text-2xl font-bold">Warehouse App</h1>
+            {/* Optional: Add a real logo here */}
+            {/* <img src="https://www.bluelinxco.com/wp-content/uploads/2021/08/bluelinx-logo-tagline-white.png" alt="BluelinxCo Logo" className="h-8" /> */}
+          </div>
+          <div className="flex-grow flex justify-center mt-2 md:mt-0">
+            <div className="flex flex-wrap justify-center gap-x-6 gap-y-2">
+              {[
+                "Inventory",
+                "Purchase Orders",
+                "Purchase Order History",
+                "Equipment",
+                "Moves",
+                "Warehouses",
+              ].map(
+                (
+                  page // Re-added 'Equipment'
+                ) => (
+                  <button
+                    key={page}
+                    onClick={() => setCurrentPage(page)}
+                    className={`text-white text-lg font-medium px-4 py-2 rounded-md transition duration-200 ease-in-out
+                    ${
+                      currentPage === page
+                        ? "bg-blue-700 shadow-inner"
+                        : "hover:bg-blue-700 hover:bg-opacity-70"
+                    }
+                  `}
+                  >
+                    {page}
+                  </button>
+                )
+              )}
+            </div>
+          </div>
+          <div className="text-sm text-white mt-2 md:mt-0">
+            {userId ? `User ID: ${userId}` : "Authenticating..."}
+          </div>
+        </div>
+      </nav>
+
+      {/* Main Content Area */}
+      <main className="flex-grow p-4">{renderPage()}</main>
+
+      {/* Message Box for Alerts/Confirms */}
+      <MessageBox ref={messageBoxRef} />
+    </div>
+  );
+};
+
+export default App;
