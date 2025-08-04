@@ -439,10 +439,9 @@ const Inventory = ({ db, userId, showMessage }) => {
     const unsubscribeInventory = onSnapshot(
       inventoryCollectionRef,
       (snapshot) => {
-        const inventoryData = snapshot.docs.map((doc) => ({
-          id: doc.id,
-          ...doc.data(),
-        }));
+        const inventoryData = snapshot.docs.map((doc) => {
+          return { id: doc.id, ...doc.data() };
+        });
         setInventory(inventoryData);
         setLoading(false);
       },
@@ -456,10 +455,9 @@ const Inventory = ({ db, userId, showMessage }) => {
     const unsubscribeWarehouses = onSnapshot(
       warehousesCollectionRef,
       (snapshot) => {
-        const warehousesData = snapshot.docs.map((doc) => ({
-          id: doc.id,
-          ...doc.data(),
-        }));
+        const warehousesData = snapshot.docs.map((doc) => {
+          return { id: doc.id, ...doc.data() };
+        });
         setWarehouses(warehousesData);
       },
       (error) => {
@@ -497,6 +495,15 @@ const Inventory = ({ db, userId, showMessage }) => {
     ) {
       showMessage(
         "Please fill in Model Number, Category, and ensure Amount in Inventory is positive.",
+        "error"
+      );
+      return;
+    }
+
+    // Ensure db and userId are available
+    if (!db || !userId) {
+      showMessage(
+        "Firebase is not initialized. Please wait or refresh the page.",
         "error"
       );
       return;
@@ -540,6 +547,15 @@ const Inventory = ({ db, userId, showMessage }) => {
   const handleImportCSV = async () => {
     if (!csvFile) {
       showMessage("Please select a CSV file to import.", "error");
+      return;
+    }
+
+    // Ensure db and userId are available
+    if (!db || !userId) {
+      showMessage(
+        "Firebase is not initialized. Please wait or refresh the page.",
+        "error"
+      );
       return;
     }
 
@@ -611,6 +627,99 @@ const Inventory = ({ db, userId, showMessage }) => {
     reader.readAsText(csvFile);
   };
 
+  // Function to get inventory insights from Gemini API
+  const getInventoryInsights = async () => {
+    // Ensure db and userId are available
+    if (!db || !userId) {
+      showMessage(
+        "Firebase is not initialized. Please wait or refresh the page.",
+        "error"
+      );
+      return;
+    }
+
+    setLoading(true);
+    try {
+      // Prepare inventory data for the prompt
+      const inventorySummary = inventory
+        .map(
+          (item) =>
+            `Model: ${item.modelNumber}, Category: ${item.category}, In Stock: ${item.amountInInventory}, On Order: ${item.numOnOrder}, Manufacturer: ${item.manufactureName}`
+        )
+        .join("\n");
+
+      const prompt = `Analyze the following inventory data and provide insights on potential overstocking, understocking, or general recommendations for optimization. Also, suggest reorder points if applicable.
+      Inventory Data:\n${inventorySummary}`;
+
+      let chatHistory = [];
+      chatHistory.push({ role: "user", parts: [{ text: prompt }] });
+
+      const payload = { contents: chatHistory };
+      const apiKey = ""; // Canvas will provide this
+      const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
+
+      let response;
+      let retries = 0;
+      const maxRetries = 3;
+      const baseDelay = 1000; // 1 second
+
+      while (retries < maxRetries) {
+        try {
+          response = await fetch(apiUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+
+          if (response.status === 429) {
+            // Too Many Requests
+            retries++;
+            await new Promise((resolve) =>
+              setTimeout(resolve, baseDelay * Math.pow(2, retries))
+            );
+            continue; // Retry
+          } else if (!response.ok) {
+            throw new Error(
+              `API error: ${response.status} ${response.statusText}`
+            );
+          }
+
+          const result = await response.json();
+          if (
+            result.candidates &&
+            result.candidates.length > 0 &&
+            result.candidates[0].content &&
+            result.candidates[0].content.parts &&
+            result.candidates[0].content.parts.length > 0
+          ) {
+            const text = result.candidates[0].content.parts[0].text;
+            showMessage(text, "info", () => {}, null); // Display insights in a message box
+          } else {
+            showMessage(
+              "Could not generate insights. Unexpected API response structure.",
+              "error"
+            );
+          }
+          break; // Success, exit loop
+        } catch (e) {
+          console.error("Error fetching inventory insights:", e);
+          showMessage(
+            `Failed to get inventory insights: ${e.message}`,
+            "error"
+          );
+          retries++;
+          if (retries < maxRetries) {
+            await new Promise((resolve) =>
+              setTimeout(resolve, baseDelay * Math.pow(2, retries))
+            );
+          }
+        }
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const inventoryColumns = [
     { key: "modelNumber", label: "Model Number", sortable: true },
     { key: "category", label: "Category", sortable: true },
@@ -663,10 +772,12 @@ const Inventory = ({ db, userId, showMessage }) => {
             searchFields={inventorySearchFields}
             initialSortColumn="modelNumber"
             actions={[
+              // Removed "Add Inventory" button from here as per user request
               {
-                label: "Add Inventory",
-                onClick: () => setIsAddInventoryModalOpen(true),
-              }, // Open the new combined modal
+                label: "Get Inventory Insights ✨",
+                onClick: getInventoryInsights,
+                className: `${BLUELINX_COLORS.buttonPrimary} ml-2`,
+              },
             ]}
           />
 
@@ -807,7 +918,6 @@ const Inventory = ({ db, userId, showMessage }) => {
                     id="numOnOrder"
                     value={newInventoryItem.numOnOrder}
                     onChange={handleNewInventoryItemChange}
-                    min="0"
                     className={BLUELINX_COLORS.inputStyle}
                   />
                 </div>
@@ -891,7 +1001,7 @@ const PurchaseOrders = ({
   openEquipmentModalForPOItem,
 }) => {
   const [purchaseOrders, setPurchaseOrders] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false); // Set to false initially, only true during API calls
   const [selectedPO, setSelectedPO] = useState(null);
   const [isReceiveModalOpen, setIsReceiveModalOpen] = useState(false);
   const [lineItemQuantities, setLineItemQuantities] = useState({});
@@ -901,16 +1011,17 @@ const PurchaseOrders = ({
   const [newPOData, setNewPOData] = useState({
     orderNumber: "",
     vendor: "",
-    manufacture: "", // Added manufacture field
-    receivingWarehouseId: "", // Added receivingWarehouseId
-    items: [], // Array to hold line items
+    manufacture: "",
+    receivingWarehouseId: "",
+    description: "", // Added description field
+    items: [],
   });
   const [newLineItem, setNewLineItem] = useState({
     itemName: "",
     modelNumber: "",
-    amountOrdered: "", // Keep as string for input, parse later
+    amountOrdered: "",
     category: "",
-    orderCost: "", // Keep as string for input, parse later
+    orderCost: "",
   });
 
   const [warehouses, setWarehouses] = useState([]); // State to hold warehouses for dropdown
@@ -925,9 +1036,10 @@ const PurchaseOrders = ({
     const unsubscribe = onSnapshot(
       warehousesCollectionRef,
       (snapshot) => {
-        setWarehouses(
-          snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
-        );
+        const warehousesData = snapshot.docs.map((doc) => {
+          return { id: doc.id, ...doc.data() };
+        });
+        setWarehouses(warehousesData);
       },
       (error) => {
         console.error("Error fetching warehouses for PO dropdown: ", error);
@@ -952,10 +1064,9 @@ const PurchaseOrders = ({
     const unsubscribe = onSnapshot(
       poCollectionRef,
       (snapshot) => {
-        const poData = snapshot.docs.map((doc) => ({
-          id: doc.id,
-          ...doc.data(),
-        }));
+        const poData = snapshot.docs.map((doc) => {
+          return { id: doc.id, ...doc.data() };
+        });
         setPurchaseOrders(poData.filter((po) => po.status === "pending")); // Only show pending POs
         setLoading(false);
       },
@@ -971,6 +1082,15 @@ const PurchaseOrders = ({
 
   // Handle "Receive Entire PO"
   const handleReceiveEntirePO = async (po) => {
+    // Ensure db and userId are available
+    if (!db || !userId) {
+      showMessage(
+        "Firebase is not initialized. Please wait or refresh the page.",
+        "error"
+      );
+      return;
+    }
+
     showMessage(
       `Are you sure you want to receive the entire PO #${po.orderNumber}?`,
       "confirm",
@@ -1243,6 +1363,93 @@ const PurchaseOrders = ({
     setNewLineItem((prev) => ({ ...prev, [name]: value }));
   };
 
+  // Function to generate item description using Gemini API
+  const generateItemDescription = async () => {
+    const { modelNumber, category, manufacture } = newLineItem;
+    if (!modelNumber && !category && !manufacture) {
+      showMessage(
+        "Please provide at least a Model Number, Category, or Manufacture to generate a description.",
+        "info"
+      );
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const prompt = `Generate a concise and descriptive name for a product with the following details:
+      Model Number: ${modelNumber || "N/A"}
+      Category: ${category || "N/A"}
+      Manufacture: ${manufacture || "N/A"}
+      
+      Provide only the generated name, without any additional text or explanation.`;
+
+      let chatHistory = [];
+      chatHistory.push({ role: "user", parts: [{ text: prompt }] });
+
+      const payload = { contents: chatHistory };
+      const apiKey = ""; // Canvas will provide this
+      const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
+
+      let response;
+      let retries = 0;
+      const maxRetries = 3;
+      const baseDelay = 1000; // 1 second
+
+      while (retries < maxRetries) {
+        try {
+          response = await fetch(apiUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+
+          if (response.status === 429) {
+            // Too Many Requests
+            retries++;
+            await new Promise((resolve) =>
+              setTimeout(resolve, baseDelay * Math.pow(2, retries))
+            );
+            continue; // Retry
+          } else if (!response.ok) {
+            throw new Error(
+              `API error: ${response.status} ${response.statusText}`
+            );
+          }
+
+          const result = await response.json();
+          if (
+            result.candidates &&
+            result.candidates.length > 0 &&
+            result.candidates[0].content &&
+            result.candidates[0].content.parts &&
+            result.candidates[0].content.parts.length > 0
+          ) {
+            const generatedName =
+              result.candidates[0].content.parts[0].text.trim();
+            setNewLineItem((prev) => ({ ...prev, itemName: generatedName }));
+          } else {
+            showMessage(
+              "Could not generate description. Unexpected API response structure.",
+              "error"
+            );
+          }
+          break; // Success, exit loop
+        } catch (e) {
+          console.error("Error generating item description:", e);
+          showMessage(`Failed to generate description: ${e.message}`, "error");
+          retries++;
+          if (retries < maxRetries) {
+            await new Promise((resolve) =>
+              setTimeout(resolve, baseDelay * Math.pow(2, retries))
+            );
+          }
+        }
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleAddLineItem = () => {
     if (
       !newLineItem.itemName ||
@@ -1312,6 +1519,7 @@ const PurchaseOrders = ({
           vendor: newPOData.vendor,
           manufacture: newPOData.manufacture, // Save manufacture
           receivingWarehouseId: newPOData.receivingWarehouseId, // Save receiving warehouse
+          description: newPOData.description, // Save description
           items: newPOData.items,
           status: "pending",
           orderDate: new Date().toISOString(),
@@ -1324,6 +1532,7 @@ const PurchaseOrders = ({
         vendor: "",
         manufacture: "",
         receivingWarehouseId: "",
+        description: "",
         items: [],
       });
       setNewLineItem({
@@ -1352,6 +1561,7 @@ const PurchaseOrders = ({
         po.receivingWarehouseId ||
         "N/A",
     }, // Display receiving warehouse
+    { key: "description", label: "Description", sortable: true }, // Display description
     {
       key: "itemDetails",
       label: "Items",
@@ -1369,6 +1579,7 @@ const PurchaseOrders = ({
     {
       key: "orderCost",
       label: "Total Cost",
+      sortable: true,
       render: (po) =>
         `$${
           po.items
@@ -1407,9 +1618,15 @@ const PurchaseOrders = ({
     { key: "status", label: "Status" },
     { key: "manufacture", label: "Manufacture" }, // Filter by manufacture
     { key: "receivingWarehouseId", label: "Receiving Warehouse" }, // Filter by receiving warehouse
+    { key: "description", label: "Description" }, // Filter by description
   ];
 
-  const poSearchFields = ["orderNumber", "vendor", "manufacture"];
+  const poSearchFields = [
+    "orderNumber",
+    "vendor",
+    "manufacture",
+    "description",
+  ];
 
   return (
     <div className="container mx-auto p-4">
@@ -1588,6 +1805,22 @@ const PurchaseOrders = ({
                   ))}
                 </select>
               </div>
+              <div>
+                <label
+                  htmlFor="description"
+                  className="block text-sm font-medium text-gray-700"
+                >
+                  Description
+                </label>
+                <textarea
+                  name="description"
+                  id="description"
+                  value={newPOData.description}
+                  onChange={handleAddPOFormChange}
+                  className={BLUELINX_COLORS.inputStyle}
+                  rows="3"
+                ></textarea>
+              </div>
               {/* Line Items Section */}
               <div className="border p-4 rounded-md bg-gray-50">
                 <h4 className="text-md font-semibold mb-3">Line Items</h4>
@@ -1699,8 +1932,6 @@ const PurchaseOrders = ({
                       id="newLineOrderCost"
                       value={newLineItem.orderCost}
                       onChange={handleNewLineItemChange}
-                      min="0"
-                      step="0.01"
                       className={BLUELINX_COLORS.inputStyle}
                       placeholder="Cost"
                     />
@@ -1712,6 +1943,14 @@ const PurchaseOrders = ({
                   className={`${BLUELINX_COLORS.buttonSecondary} text-sm py-1 px-3`}
                 >
                   Add Line Item
+                </button>
+                <button
+                  type="button"
+                  onClick={generateItemDescription}
+                  className={`${BLUELINX_COLORS.buttonSecondary} text-sm py-1 px-3 ml-2`}
+                  disabled={loading} // Disable while generating
+                >
+                  {loading ? "Generating..." : "Generate Description ✨"}
                 </button>
               </div>
               <div className="flex justify-end pt-4">
@@ -1739,6 +1978,7 @@ const POHistory = ({ db, userId, showMessage }) => {
     vendor: "",
     manufacture: "", // Added manufacture field
     receivingWarehouseId: "", // Added receivingWarehouseId
+    description: "", // Added description field
     items: [],
   });
   const [editLineItem, setEditLineItem] = useState({
@@ -1762,10 +2002,9 @@ const POHistory = ({ db, userId, showMessage }) => {
     const unsubscribe = onSnapshot(
       poHistoryCollectionRef,
       (snapshot) => {
-        const historyData = snapshot.docs.map((doc) => ({
-          id: doc.id,
-          ...doc.data(),
-        }));
+        const historyData = snapshot.docs.map((doc) => {
+          return { id: doc.id, ...doc.data() };
+        });
         setPoHistory(historyData);
         setLoading(false);
       },
@@ -1787,6 +2026,7 @@ const POHistory = ({ db, userId, showMessage }) => {
       vendor: po.vendor,
       manufacture: po.manufacture || "",
       receivingWarehouseId: po.receivingWarehouseId || "",
+      description: po.description || "", // Load description
       items: po.items || [],
     });
     setIsEditPOHistoryModalOpen(true);
@@ -1874,6 +2114,7 @@ const POHistory = ({ db, userId, showMessage }) => {
           vendor: editPOData.vendor,
           manufacture: editPOData.manufacture,
           receivingWarehouseId: editPOData.receivingWarehouseId,
+          description: editPOData.description, // Update description
           items: editPOData.items,
           // Preserve original status and receivedDate
           status: currentPOHistoryItem.status,
@@ -1902,6 +2143,7 @@ const POHistory = ({ db, userId, showMessage }) => {
             vendor: poToDelete.vendor,
             manufacture: poToDelete.manufacture || "",
             receivingWarehouseId: poToDelete.receivingWarehouseId || "",
+            description: poToDelete.description || "", // Include description in deleted record
             items: poToDelete.items
               ? poToDelete.items.map((item) => ({
                   itemName: item.itemName,
@@ -1953,6 +2195,7 @@ const POHistory = ({ db, userId, showMessage }) => {
         po.receivingWarehouseId ||
         "N/A",
     }, // Display receiving warehouse
+    { key: "description", label: "Description", sortable: true }, // Display description
     {
       key: "itemDetails",
       label: "Items (Ordered/Received)",
@@ -1961,9 +2204,8 @@ const POHistory = ({ db, userId, showMessage }) => {
           {po.items &&
             po.items.map((item, index) => (
               <li key={index}>
-                {item.itemName} ({item.modelNumber}) - Ordered:{" "}
-                {item.amountOrdered} / Received:{" "}
-                {item.amountReceived || item.amountOrdered}
+                {item.itemName} ({item.modelNumber}) - {item.amountOrdered} /
+                Received: {item.amountReceived || item.amountOrdered}
               </li>
             ))}
         </ul>
@@ -1972,6 +2214,7 @@ const POHistory = ({ db, userId, showMessage }) => {
     {
       key: "orderCost",
       label: "Total Cost",
+      sortable: true,
       render: (po) =>
         `$${
           po.items
@@ -2027,9 +2270,15 @@ const POHistory = ({ db, userId, showMessage }) => {
     { key: "status", label: "Status" },
     { key: "manufacture", label: "Manufacture" }, // Filter by manufacture
     { key: "receivingWarehouseId", label: "Receiving Warehouse" }, // Filter by receiving warehouse
+    { key: "description", label: "Description" }, // Filter by description
   ];
 
-  const poHistorySearchFields = ["orderNumber", "vendor", "manufacture"];
+  const poHistorySearchFields = [
+    "orderNumber",
+    "vendor",
+    "manufacture",
+    "description",
+  ];
 
   return (
     <div className="container mx-auto p-4">
@@ -2054,7 +2303,7 @@ const POHistory = ({ db, userId, showMessage }) => {
                     <button
                       key={`edit-po-${po.id}`}
                       onClick={() => handleEditPOHistory(po)}
-                      className={`${BLUELINX_COLORS.buttonSecondary} text-xs py-1 px-2`}
+                      className={`${BLUELINX_COLORS.buttonSecondary} text-sm py-2 px-4`} // Updated size
                     >
                       Edit
                     </button>
@@ -2068,7 +2317,7 @@ const POHistory = ({ db, userId, showMessage }) => {
                     <button
                       key={`delete-po-${po.id}`}
                       onClick={() => handleDeletePOHistory(po)}
-                      className={`bg-red-500 hover:bg-red-700 text-white font-bold py-1 px-2 rounded-md text-xs`}
+                      className={`bg-red-500 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-md`} // Updated size
                     >
                       Delete
                     </button>
@@ -2248,8 +2497,6 @@ const POHistory = ({ db, userId, showMessage }) => {
                       id="editLineOrderCost"
                       value={editLineItem.orderCost}
                       onChange={handleEditLineItemChange}
-                      min="0"
-                      step="0.01"
                       className={BLUELINX_COLORS.inputStyle}
                       placeholder="Cost"
                     />
@@ -2296,13 +2543,12 @@ const POHistory = ({ db, userId, showMessage }) => {
 
 // Equipment Page
 const Equipment = ({ db, userId, showMessage }) => {
-  // Removed isModalOpenProp, prefillDataProp, onCloseModalProp
   const [equipment, setEquipment] = useState([]);
   const [isAddEquipmentModalOpen, setIsAddEquipmentModalOpen] = useState(false); // New state for combined modal
   const [showCsvImport, setShowCsvImport] = useState(false); // State to toggle between manual add and CSV import
   const [csvFile, setCsvFile] = useState(null);
   const [currentEquipment, setCurrentEquipment] = useState(null); // For edit mode
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false); // Set to false initially, only true during API calls
   const [newEquipmentItem, setNewEquipmentItem] = useState({
     // State for new manual equipment item
     name: "",
@@ -2310,25 +2556,15 @@ const Equipment = ({ db, userId, showMessage }) => {
     model: "",
     manufacture: "",
     quantity: 0,
-    mfp: "", // Added MFP field
+    mfp: "",
     imageUrl: "",
+    description: "", // Added description field
   });
 
-  // Removed sync effects as external props are no longer used for this modal
-  // useEffect(() => {
-  //   if (isModalOpenProp !== undefined) {
-  //     setIsAddEquipmentModalOpen(isModalOpenProp);
-  //   }
-  // }, [isModalOpenProp]);
-
-  // useEffect(() => {
-  //   if (prefillDataProp) {
-  //     setCurrentEquipment(prefillDataProp);
-  //     setShowCsvImport(false); // Always default to manual add if prefilling
-  //   } else {
-  //     setCurrentEquipment(null);
-  //   }
-  // }, [prefillDataProp]);
+  // State for troubleshooting modal
+  const [isTroubleshootingModalOpen, setIsTroubleshootingModalOpen] =
+    useState(false);
+  const [troubleshootingContent, setTroubleshootingContent] = useState("");
 
   // Fetch Equipment
   useEffect(() => {
@@ -2342,10 +2578,9 @@ const Equipment = ({ db, userId, showMessage }) => {
     const unsubscribe = onSnapshot(
       equipmentCollectionRef,
       (snapshot) => {
-        const equipmentData = snapshot.docs.map((doc) => ({
-          id: doc.id,
-          ...doc.data(),
-        }));
+        const equipmentData = snapshot.docs.map((doc) => {
+          return { id: doc.id, ...doc.data() };
+        });
         setEquipment(equipmentData);
         setLoading(false);
       },
@@ -2371,13 +2606,16 @@ const Equipment = ({ db, userId, showMessage }) => {
   // Handle adding a new equipment item manually
   const handleAddEquipmentSubmit = async (e) => {
     e.preventDefault();
-    if (
-      !newEquipmentItem.name ||
-      !newEquipmentItem.model ||
-      newEquipmentItem.quantity <= 0
-    ) {
+    // No longer checking for required fields as they are all optional
+    // if (!newEquipmentItem.name || !newEquipmentItem.model || newEquipmentItem.quantity <= 0) {
+    //   showMessage('Please fill in Name, Model, and ensure Quantity is positive.', 'error');
+    //   return;
+    // }
+
+    // Ensure db and userId are available
+    if (!db || !userId) {
       showMessage(
-        "Please fill in Name, Model, and ensure Quantity is positive.",
+        "Firebase is not initialized. Please wait or refresh the page.",
         "error"
       );
       return;
@@ -2404,6 +2642,7 @@ const Equipment = ({ db, userId, showMessage }) => {
         quantity: 0,
         mfp: "",
         imageUrl: "",
+        description: "",
       });
       setShowCsvImport(false); // Reset to manual add view
     } catch (e) {
@@ -2422,11 +2661,21 @@ const Equipment = ({ db, userId, showMessage }) => {
       model: formData.get("model"),
       manufacture: formData.get("manufacture"),
       quantity: parseInt(formData.get("quantity")) || 0,
-      mfp: formData.get("mfp"), // Get MFP from form
+      mfp: formData.get("mfp"),
       imageUrl:
         formData.get("imageUrl") ||
         "https://placehold.co/100x100/eeeeee/333333?text=No+Image",
+      description: formData.get("description"), // Get description from form
     };
+
+    // Ensure db and userId are available
+    if (!db || !userId) {
+      showMessage(
+        "Firebase is not initialized. Please wait or refresh the page.",
+        "error"
+      );
+      return;
+    }
 
     if (currentEquipment && currentEquipment.id) {
       try {
@@ -2461,6 +2710,15 @@ const Equipment = ({ db, userId, showMessage }) => {
       return;
     }
 
+    // Ensure db and userId are available
+    if (!db || !userId) {
+      showMessage(
+        "Firebase is not initialized. Please wait or refresh the page.",
+        "error"
+      );
+      return;
+    }
+
     const reader = new FileReader();
     reader.onload = async (e) => {
       const text = e.target.result;
@@ -2482,11 +2740,12 @@ const Equipment = ({ db, userId, showMessage }) => {
         category: item["Category"] || "",
         model: item["Model"] || "",
         manufacture: item["Manufacture"] || "",
-        quantity: parseInt(item["Quantity"]) || 0, // Added quantity parsing
-        mfp: item["MFP"] || "", // Added MFP from CSV
+        quantity: parseInt(item["Quantity"]) || 0,
+        mfp: item["MFP"] || "",
         imageUrl:
           item["Image"] ||
           "https://placehold.co/100x100/eeeeee/333333?text=No+Image",
+        description: item["Description"] || "", // Added description from CSV
       }));
 
       for (const item of processedData) {
@@ -2531,6 +2790,15 @@ const Equipment = ({ db, userId, showMessage }) => {
 
   // Handle Delete Equipment
   const handleDeleteEquipment = (equipmentToDelete) => {
+    // Ensure db and userId are available
+    if (!db || !userId) {
+      showMessage(
+        "Firebase is not initialized. Please wait or refresh the page.",
+        "error"
+      );
+      return;
+    }
+
     showMessage(
       `Are you sure you want to delete ${equipmentToDelete.name}?`,
       "confirm",
@@ -2552,13 +2820,206 @@ const Equipment = ({ db, userId, showMessage }) => {
     );
   };
 
+  // Function to generate equipment description using Gemini API
+  const generateEquipmentDescription = async () => {
+    const itemToDescribe = currentEquipment || newEquipmentItem;
+    const { name, category, model, manufacture, mfp } = itemToDescribe;
+
+    // No longer checking for required fields as they are all optional
+    // if (!name && !model && !category && !manufacture && !mfp) {
+    //   showMessage('Please provide at least a Name, Model, Category, Manufacture, or MFP to generate a description.', 'info');
+    //   return;
+    // }
+
+    setLoading(true);
+    try {
+      const prompt = `Generate a concise and descriptive text for an equipment item with the following details:
+      Name: ${name || "N/A"}
+      Category: ${category || "N/A"}
+      Model: ${model || "N/A"}
+      Manufacture: ${manufacture || "N/A"}
+      MFP: ${mfp || "N/A"}
+      
+      Provide only the generated description, without any additional text or explanation.`;
+
+      let chatHistory = [];
+      chatHistory.push({ role: "user", parts: [{ text: prompt }] });
+
+      const payload = { contents: chatHistory };
+      const apiKey = ""; // Canvas will provide this
+      const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
+
+      let response;
+      let retries = 0;
+      const maxRetries = 3;
+      const baseDelay = 1000; // 1 second
+
+      while (retries < maxRetries) {
+        try {
+          response = await fetch(apiUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+
+          if (response.status === 429) {
+            // Too Many Requests
+            retries++;
+            await new Promise((resolve) =>
+              setTimeout(resolve, baseDelay * Math.pow(2, retries))
+            );
+            continue; // Retry
+          } else if (!response.ok) {
+            throw new Error(
+              `API error: ${response.status} ${response.statusText}`
+            );
+          }
+
+          const result = await response.json();
+          if (
+            result.candidates &&
+            result.candidates.length > 0 &&
+            result.candidates[0].content &&
+            result.candidates[0].content.parts &&
+            result.candidates[0].content.parts.length > 0
+          ) {
+            const generatedDescription =
+              result.candidates[0].content.parts[0].text.trim();
+            if (currentEquipment) {
+              setCurrentEquipment((prev) => ({
+                ...prev,
+                description: generatedDescription,
+              }));
+            } else {
+              setNewEquipmentItem((prev) => ({
+                ...prev,
+                description: generatedDescription,
+              }));
+            }
+          } else {
+            showMessage(
+              "Could not generate description. Unexpected API response structure.",
+              "error"
+            );
+          }
+          break; // Success, exit loop
+        } catch (e) {
+          console.error("Error generating equipment description:", e);
+          showMessage(`Failed to generate description: ${e.message}`, "error");
+          retries++;
+          if (retries < maxRetries) {
+            await new Promise((resolve) =>
+              setTimeout(resolve, baseDelay * Math.pow(2, retries))
+            );
+          }
+        }
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Function to generate troubleshooting guide using Gemini API
+  const generateTroubleshootingGuide = async (equipmentItem) => {
+    // Ensure db and userId are available
+    if (!db || !userId) {
+      showMessage(
+        "Firebase is not initialized. Please wait or refresh the page.",
+        "error"
+      );
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const prompt = `Generate a comprehensive troubleshooting guide and common maintenance tips for the following equipment:
+      Name: ${equipmentItem.name || "N/A"}
+      Category: ${equipmentItem.category || "N/A"}
+      Model: ${equipmentItem.model || "N/A"}
+      Manufacture: ${equipmentItem.manufacture || "N/A"}
+      MFP: ${equipmentItem.mfp || "N/A"}
+      Description: ${equipmentItem.description || "N/A"}
+      
+      Provide actionable steps and tips.`;
+
+      let chatHistory = [];
+      chatHistory.push({ role: "user", parts: [{ text: prompt }] });
+
+      const payload = { contents: chatHistory };
+      const apiKey = ""; // Canvas will provide this
+      const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
+
+      let response;
+      let retries = 0;
+      const maxRetries = 3;
+      const baseDelay = 1000; // 1 second
+
+      while (retries < maxRetries) {
+        try {
+          response = await fetch(apiUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+
+          if (response.status === 429) {
+            // Too Many Requests
+            retries++;
+            await new Promise((resolve) =>
+              setTimeout(resolve, baseDelay * Math.pow(2, retries))
+            );
+            continue; // Retry
+          } else if (!response.ok) {
+            throw new Error(
+              `API error: ${response.status} ${response.statusText}`
+            );
+          }
+
+          const result = await response.json();
+          if (
+            result.candidates &&
+            result.candidates.length > 0 &&
+            result.candidates[0].content &&
+            result.candidates[0].content.parts &&
+            result.candidates[0].content.parts.length > 0
+          ) {
+            const text = result.candidates[0].content.parts[0].text;
+            setTroubleshootingContent(text);
+            setIsTroubleshootingModalOpen(true); // Open the troubleshooting modal
+          } else {
+            showMessage(
+              "Could not generate troubleshooting guide. Unexpected API response structure.",
+              "error"
+            );
+          }
+          break; // Success, exit loop
+        } catch (e) {
+          console.error("Error fetching troubleshooting guide:", e);
+          showMessage(
+            `Failed to get troubleshooting guide: ${e.message}`,
+            "error"
+          );
+          retries++;
+          if (retries < maxRetries) {
+            await new Promise((resolve) =>
+              setTimeout(resolve, baseDelay * Math.pow(2, retries))
+            );
+          }
+        }
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const equipmentColumns = [
     { key: "name", label: "Name", sortable: true },
     { key: "category", label: "Category", sortable: true },
     { key: "model", label: "Model", sortable: true },
     { key: "manufacture", label: "Manufacture", sortable: true },
     { key: "quantity", label: "Quantity", sortable: true },
-    { key: "mfp", label: "MFP", sortable: true }, // Display MFP
+    { key: "mfp", label: "MFP", sortable: true },
+    { key: "description", label: "Description", sortable: true }, // Display Description
     {
       key: "imageUrl",
       label: "Image",
@@ -2579,10 +3040,17 @@ const Equipment = ({ db, userId, showMessage }) => {
   const equipmentFilterFields = [
     { key: "category", label: "Category" },
     { key: "manufacture", label: "Manufacture" },
-    { key: "mfp", label: "MFP" }, // Filter by MFP
+    { key: "mfp", label: "MFP" },
+    { key: "description", label: "Description" }, // Filter by Description
   ];
 
-  const equipmentSearchFields = ["name", "model", "manufacture", "mfp"]; // Search by MFP
+  const equipmentSearchFields = [
+    "name",
+    "model",
+    "manufacture",
+    "mfp",
+    "description",
+  ]; // Search by Description
 
   return (
     <div className="container mx-auto p-4">
@@ -2605,7 +3073,7 @@ const Equipment = ({ db, userId, showMessage }) => {
                   setIsAddEquipmentModalOpen(true);
                   setShowCsvImport(false);
                 },
-              }, // Open combined modal, default to manual add
+              },
               {
                 label: "Edit",
                 onClick: (item) => {
@@ -2613,13 +3081,14 @@ const Equipment = ({ db, userId, showMessage }) => {
                   setIsAddEquipmentModalOpen(true);
                   setShowCsvImport(false);
                 },
-              }, // Open combined modal for edit, default to manual add
+              },
               {
                 label: "Delete",
                 onClick: (item) => handleDeleteEquipment(item),
                 className:
-                  "bg-red-500 hover:bg-red-700 text-white font-bold py-1 px-2 rounded-md text-xs",
+                  "bg-red-500 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-md",
               },
+              // Removed the Troubleshoot button from here
             ]}
           />
 
@@ -2640,6 +3109,7 @@ const Equipment = ({ db, userId, showMessage }) => {
                 quantity: 0,
                 mfp: "",
                 imageUrl: "",
+                description: "",
               });
             }}
             title={
@@ -2681,7 +3151,8 @@ const Equipment = ({ db, userId, showMessage }) => {
               <>
                 <p className="mb-4 text-gray-700">
                   Upload a CSV file with 'Name', 'Category', 'Model',
-                  'Manufacture', 'Quantity', 'MFP', 'Image' columns.
+                  'Manufacture', 'Quantity', 'MFP', 'Description', 'Image'
+                  columns.
                 </p>
                 <input
                   type="file"
@@ -2725,7 +3196,6 @@ const Equipment = ({ db, userId, showMessage }) => {
                     }
                     onChange={handleNewEquipmentItemChange}
                     className={BLUELINX_COLORS.inputStyle}
-                    required
                   />
                 </div>
                 <div>
@@ -2744,7 +3214,6 @@ const Equipment = ({ db, userId, showMessage }) => {
                     }
                     onChange={handleNewEquipmentItemChange}
                     className={BLUELINX_COLORS.inputStyle}
-                    required
                   />
                 </div>
                 <div>
@@ -2763,7 +3232,6 @@ const Equipment = ({ db, userId, showMessage }) => {
                     }
                     onChange={handleNewEquipmentItemChange}
                     className={BLUELINX_COLORS.inputStyle}
-                    required
                   />
                 </div>
                 <div>
@@ -2783,7 +3251,22 @@ const Equipment = ({ db, userId, showMessage }) => {
                     }
                     onChange={handleNewEquipmentItemChange}
                     className={BLUELINX_COLORS.inputStyle}
-                    required
+                  />
+                </div>
+                <div>
+                  <label
+                    htmlFor="mfp"
+                    className="block text-sm font-medium text-gray-700"
+                  >
+                    MFP
+                  </label>
+                  <input
+                    type="text"
+                    name="mfp"
+                    id="mfp"
+                    defaultValue={currentEquipment?.mfp || newEquipmentItem.mfp}
+                    onChange={handleNewEquipmentItemChange}
+                    className={BLUELINX_COLORS.inputStyle}
                   />
                 </div>
                 <div>
@@ -2802,24 +3285,26 @@ const Equipment = ({ db, userId, showMessage }) => {
                     }
                     min="0"
                     className={BLUELINX_COLORS.inputStyle}
-                    required
                   />
                 </div>
                 <div>
                   <label
-                    htmlFor="mfp"
+                    htmlFor="description"
                     className="block text-sm font-medium text-gray-700"
                   >
-                    MFP
+                    Description
                   </label>
-                  <input
-                    type="text"
-                    name="mfp"
-                    id="mfp"
-                    defaultValue={currentEquipment?.mfp || newEquipmentItem.mfp}
+                  <textarea
+                    name="description"
+                    id="description"
+                    defaultValue={
+                      currentEquipment?.description ||
+                      newEquipmentItem.description
+                    }
                     onChange={handleNewEquipmentItemChange}
                     className={BLUELINX_COLORS.inputStyle}
-                  />
+                    rows="3"
+                  ></textarea>
                 </div>
                 <div>
                   <label
@@ -2850,6 +3335,33 @@ const Equipment = ({ db, userId, showMessage }) => {
                 </div>
               </form>
             )}
+            <div className="text-center mt-4">
+              <button
+                onClick={generateEquipmentDescription}
+                className={`${BLUELINX_COLORS.buttonSecondary} text-sm py-2 px-4`} // Updated size
+                disabled={loading}
+              >
+                {loading ? "Generating..." : "Generate Description ✨"}
+              </button>
+            </div>
+          </Modal>
+          {/* Troubleshooting Modal */}
+          <Modal
+            isOpen={isTroubleshootingModalOpen}
+            onClose={() => setIsTroubleshootingModalOpen(false)}
+            title="Equipment Troubleshooting Guide"
+          >
+            <div className="prose max-w-none">
+              {troubleshootingContent ? (
+                <p className="text-gray-700 whitespace-pre-wrap">
+                  {troubleshootingContent}
+                </p>
+              ) : (
+                <p className="text-gray-500">
+                  No troubleshooting guide available.
+                </p>
+              )}
+            </div>
           </Modal>
         </>
       )}
@@ -2892,10 +3404,9 @@ const Moves = ({ db, userId, showMessage }) => {
     const unsubscribeMoves = onSnapshot(
       movesCollectionRef,
       (snapshot) => {
-        const movesData = snapshot.docs.map((doc) => ({
-          id: doc.id,
-          ...doc.data(),
-        }));
+        const movesData = snapshot.docs.map((doc) => {
+          return { id: doc.id, ...doc.data() };
+        });
         setMoves(movesData);
         setLoading(false);
       },
@@ -2910,7 +3421,9 @@ const Moves = ({ db, userId, showMessage }) => {
       inventoryCollectionRef,
       (snapshot) => {
         setInventory(
-          snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
+          snapshot.docs.map((doc) => {
+            return { id: doc.id, ...doc.data() };
+          })
         );
       },
       (error) => {
@@ -2921,9 +3434,10 @@ const Moves = ({ db, userId, showMessage }) => {
     const unsubscribeWarehouses = onSnapshot(
       warehousesCollectionRef,
       (snapshot) => {
-        setWarehouses(
-          snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
-        );
+        const warehousesData = snapshot.docs.map((doc) => {
+          return { id: doc.id, ...doc.data() };
+        });
+        setWarehouses(warehousesData);
       },
       (error) => {
         console.error("Error fetching warehouses for moves: ", error);
@@ -3188,7 +3702,7 @@ const Moves = ({ db, userId, showMessage }) => {
       ) : (
         <>
           <DataTable
-            title="Inventory Moves"
+            title="Inventory Transfers" // Renamed title
             data={moves}
             columns={movesColumns}
             filterFields={movesFilterFields}
@@ -3197,9 +3711,9 @@ const Moves = ({ db, userId, showMessage }) => {
             initialSortDirection="desc"
             actions={[
               {
-                label: "Initiate New Move",
+                label: "Initiate New Transfer",
                 onClick: () => setIsModalOpen(true),
-              },
+              }, // Renamed label
               {
                 label: "Mark In-Transit",
                 onClick: (move) => handleUpdateMoveStatus(move, "in-transit"),
@@ -3234,8 +3748,10 @@ const Moves = ({ db, userId, showMessage }) => {
           <Modal
             isOpen={isModalOpen}
             onClose={() => setIsModalOpen(false)}
-            title="Initiate New Inventory Move"
+            title="Initiate New Inventory Transfer"
           >
+            {" "}
+            {/* Renamed title */}
             <form onSubmit={handleInitiateMove} className="space-y-4">
               <div>
                 <label
@@ -3326,7 +3842,7 @@ const Moves = ({ db, userId, showMessage }) => {
               </div>
               <div className="flex justify-end pt-4">
                 <button type="submit" className={BLUELINX_COLORS.buttonPrimary}>
-                  Initiate Move
+                  Initiate Transfer {/* Renamed button text */}
                 </button>
               </div>
             </form>
@@ -3344,7 +3860,7 @@ const Warehouses = ({ db, userId, showMessage }) => {
   const [showCsvImport, setShowCsvImport] = useState(false); // State to toggle between manual add and CSV import
   const [csvFile, setCsvFile] = useState(null);
   const [currentWarehouse, setCurrentWarehouse] = useState(null); // For edit mode
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false); // Set to false initially, only true during API calls
   const [newWarehouseItem, setNewWarehouseItem] = useState({
     // State for new manual warehouse item
     shortCode: "",
@@ -3367,10 +3883,9 @@ const Warehouses = ({ db, userId, showMessage }) => {
     const unsubscribe = onSnapshot(
       warehousesCollectionRef,
       (snapshot) => {
-        const warehousesData = snapshot.docs.map((doc) => ({
-          id: doc.id,
-          ...doc.data(),
-        }));
+        const warehousesData = snapshot.docs.map((doc) => {
+          return { id: doc.id, ...doc.data() };
+        });
         setWarehouses(warehousesData);
         setLoading(false);
       },
@@ -3528,6 +4043,92 @@ const Warehouses = ({ db, userId, showMessage }) => {
     );
   };
 
+  // Function to get warehouse optimization suggestions from Gemini API
+  const getWarehouseOptimizationSuggestions = async (warehouse) => {
+    setLoading(true);
+    try {
+      const prompt = `Given the warehouse details:
+      Name: ${warehouse.name || "N/A"}
+      Short Code: ${warehouse.shortCode || "N/A"}
+      Facility Code: ${warehouse.facilityCode || "N/A"}
+      Street Address: ${warehouse.streetAddress || "N/A"}
+      City: ${warehouse.city || "N/A"}
+      State: ${warehouse.state || "N/A"}
+      
+      Provide 3-5 actionable suggestions for optimizing its storage layout, operational efficiency, or potential expansion considerations. Focus on general best practices relevant to these details.`;
+
+      let chatHistory = [];
+      chatHistory.push({ role: "user", parts: [{ text: prompt }] });
+
+      const payload = { contents: chatHistory };
+      const apiKey = ""; // Canvas will provide this
+      const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
+
+      let response;
+      let retries = 0;
+      const maxRetries = 3;
+      const baseDelay = 1000; // 1 second
+
+      while (retries < maxRetries) {
+        try {
+          response = await fetch(apiUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+
+          if (response.status === 429) {
+            // Too Many Requests
+            retries++;
+            await new Promise((resolve) =>
+              setTimeout(resolve, baseDelay * Math.pow(2, retries))
+            );
+            continue; // Retry
+          } else if (!response.ok) {
+            throw new Error(
+              `API error: ${response.status} ${response.statusText}`
+            );
+          }
+
+          const result = await response.json();
+          if (
+            result.candidates &&
+            result.candidates.length > 0 &&
+            result.candidates[0].content &&
+            result.candidates[0].content.parts &&
+            result.candidates[0].content.parts.length > 0
+          ) {
+            const text = result.candidates[0].content.parts[0].text;
+            showMessage(text, "info", () => {}, null); // Display insights in a message box
+          } else {
+            showMessage(
+              "Could not generate optimization suggestions. Unexpected API response structure.",
+              "error"
+            );
+          }
+          break; // Success, exit loop
+        } catch (e) {
+          console.error(
+            "Error fetching warehouse optimization suggestions:",
+            e
+          );
+          showMessage(
+            `Failed to get warehouse optimization suggestions: ${e.message}`,
+            "error"
+          );
+          retries++;
+          if (retries < maxRetries) {
+            await new Promise((resolve) =>
+              setTimeout(resolve, baseDelay * Math.pow(2, retries))
+            );
+          }
+        }
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const warehouseColumns = [
     { key: "shortCode", label: "Short Code", sortable: true },
     { key: "facilityCode", label: "Facility Code", sortable: true }, // Display facilityCode
@@ -3575,7 +4176,7 @@ const Warehouses = ({ db, userId, showMessage }) => {
                   setIsAddWarehouseModalOpen(true);
                   setShowCsvImport(false);
                 },
-              }, // Open the new combined modal
+              },
               {
                 label: "Edit",
                 onClick: (item) => {
@@ -3583,12 +4184,28 @@ const Warehouses = ({ db, userId, showMessage }) => {
                   setIsAddWarehouseModalOpen(true);
                   setShowCsvImport(false);
                 },
-              }, // Use new combined modal for edit
+              },
               {
                 label: "Delete",
                 onClick: (item) => handleDeleteWarehouse(item),
                 className:
-                  "bg-red-500 hover:bg-red-700 text-white font-bold py-1 px-2 rounded-md text-xs",
+                  "bg-red-500 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-md",
+              }, // Updated size
+              {
+                label: "Get Optimization Suggestions ✨",
+                onClick: (warehouse) =>
+                  getWarehouseOptimizationSuggestions(warehouse),
+                render: (warehouse) => (
+                  <button
+                    key={`optimize-warehouse-${warehouse.id}`}
+                    onClick={() =>
+                      getWarehouseOptimizationSuggestions(warehouse)
+                    }
+                    className={`${BLUELINX_COLORS.buttonPrimary} text-xs py-1 px-2`}
+                  >
+                    Optimize ✨
+                  </button>
+                ),
               },
             ]}
           />
@@ -3820,21 +4437,6 @@ const App = () => {
   const [loadingFirebase, setLoadingFirebase] = useState(true);
   const [currentPage, setCurrentPage] = useState("Inventory");
 
-  // Removed states for cross-component Equipment modal control as the Equipment page is removed
-  // const [isEquipmentModalOpenFromPO, setIsEquipmentModalOpenFromPO] = useState(false);
-  // const [prefillEquipmentData, setPrefillEquipmentData] = useState(null);
-
-  // Removed callbacks for opening/closing Equipment modal as the Equipment page is removed
-  // const openEquipmentModalForPOItem = useCallback((data) => {
-  //   setPrefillEquipmentData(data);
-  //   setIsEquipmentModalOpenFromPO(true);
-  // }, []);
-
-  // const closeEquipmentModalForPOItem = useCallback(() => {
-  //   setIsEquipmentModalOpenFromPO(false);
-  //   setPrefillEquipmentData(null);
-  // }, []);
-
   // Create a ref for the MessageBox
   const messageBoxRef = React.useRef(null);
 
@@ -3932,16 +4534,14 @@ const App = () => {
       case "Inventory":
         return <Inventory db={db} userId={userId} showMessage={showMessage} />;
       case "Purchase Orders":
-        // Removed openEquipmentModalForPOItem prop as Equipment page is removed
         return (
           <PurchaseOrders db={db} userId={userId} showMessage={showMessage} />
         );
       case "Purchase Order History":
         return <POHistory db={db} userId={userId} showMessage={showMessage} />;
-      // Re-added Equipment case
       case "Equipment":
         return <Equipment db={db} userId={userId} showMessage={showMessage} />;
-      case "Moves":
+      case "Transfers": // Renamed from Moves
         return <Moves db={db} userId={userId} showMessage={showMessage} />;
       case "Warehouses":
         return <Warehouses db={db} userId={userId} showMessage={showMessage} />;
@@ -3985,27 +4585,23 @@ const App = () => {
                 "Purchase Orders",
                 "Purchase Order History",
                 "Equipment",
-                "Moves",
+                "Transfers",
                 "Warehouses",
-              ].map(
-                (
-                  page // Re-added 'Equipment'
-                ) => (
-                  <button
-                    key={page}
-                    onClick={() => setCurrentPage(page)}
-                    className={`text-white text-lg font-medium px-4 py-2 rounded-md transition duration-200 ease-in-out
+              ].map((page) => (
+                <button
+                  key={page}
+                  onClick={() => setCurrentPage(page)}
+                  className={`text-white text-lg font-medium px-4 py-2 rounded-md transition duration-200 ease-in-out
                     ${
                       currentPage === page
                         ? "bg-blue-700 shadow-inner"
                         : "hover:bg-blue-700 hover:bg-opacity-70"
                     }
                   `}
-                  >
-                    {page}
-                  </button>
-                )
-              )}
+                >
+                  {page}
+                </button>
+              ))}
             </div>
           </div>
           <div className="text-sm text-white mt-2 md:mt-0">
